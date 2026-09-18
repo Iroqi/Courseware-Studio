@@ -72,7 +72,7 @@ data-locked="1"
 
 页面层只依赖统一的 `audio + timing + text` 数据，不依赖某个 TTS 厂商。
 
-使用内置 `narration.py` 合成时，除 Python 外还需要可用的 `ffmpeg` 和 Python `openai` 包，以及 MiMo API key；只使用已有音频与 timing 时不需要这些 TTS 依赖。
+使用内置 `narration.py` 合成时，除 Python 外还需要可用的 `ffmpeg` 和 Python `openai` 包，以及 MiMo API key；只使用已有音频与 timing 时不需要这些 TTS 依赖。最终 `audio/` 目录只放 `combined.wav` 与 `narration_timing.json`；`--resume` 缓存位于同级 `.courseware-cache/` 或显式 `--cache-dir`。
 
 ## 3. 工作流
 

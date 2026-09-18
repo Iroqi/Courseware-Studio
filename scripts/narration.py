@@ -377,7 +377,9 @@ def _build_parser():
     parser.add_argument("--loudness", type=float, default=None,
                         help="响度归一化目标（LUFS，如 -16）。默认不做归一化")
     parser.add_argument("--resume", action="store_true",
-                        help="复用输入未变的句子音频（省时间的开关，不是需要维护的状态）")
+                        help="复用 cache-dir 中输入未变的句子音频")
+    parser.add_argument("--cache-dir", default=None,
+                        help="--resume 的句子缓存目录（默认在输出目录同级的 .courseware-cache/ 下）")
     parser.add_argument("--bgm", default=None, help="背景音乐文件（mp3/wav/ogg）")
     parser.add_argument("--bgm-volume", type=float, default=0.15,
                         help="BGM 相对人声音量（0.0-1.0，默认 0.15）")
@@ -415,6 +417,8 @@ def _validate_args(parser, args):
             parser.error(str(e))
     if args.workers < 1:
         parser.error(f"--workers 至少为 1（收到 {args.workers}）")
+    if args.cache_dir and not args.resume:
+        parser.error("--cache-dir 只能与 --resume 一起使用")
     # 用户显式要求 BGM 时，缺失文件不能静默改变最终制品。
     if args.bgm and not os.path.exists(args.bgm):
         parser.error(f"--bgm 文件不存在：{args.bgm}")
@@ -781,7 +785,20 @@ def main():
               file=sys.stderr)
         sys.exit(1)
     os.makedirs(args.output, exist_ok=True)
-    sentences_dir = os.path.join(args.output, "sentences")
+    # 成品目录只放 combined.wav 与 narration_timing.json。可复用缓存移到同级的
+    # 隐藏工作目录；不开 --resume 时用 TemporaryDirectory，不会污染交付目录。
+    temp_cache = None
+    if args.resume:
+        cache_root = args.cache_dir or os.path.join(
+            os.path.dirname(os.path.abspath(args.output)), ".courseware-cache",
+            os.path.basename(os.path.abspath(args.output)))
+        sentences_dir = os.path.join(cache_root, "sentences")
+        print(f"[cache] {sentences_dir}", flush=True)
+    else:
+        temp_cache = tempfile.TemporaryDirectory(
+            prefix=".courseware-tts-",
+            dir=os.path.dirname(os.path.abspath(args.output)))
+        sentences_dir = temp_cache.name
     os.makedirs(sentences_dir, exist_ok=True)
 
     ffmpeg_path = get_ffmpeg()
@@ -863,6 +880,8 @@ def main():
 
     _finalize_audio(args, ffmpeg_path, sentence_data, source_data, seg_config,
                     silence_fallback_count, len(sentences), cached_count)
+    if temp_cache is not None:
+        temp_cache.cleanup()
 
 
 if __name__ == "__main__":

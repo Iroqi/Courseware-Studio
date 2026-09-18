@@ -347,6 +347,24 @@ PROBE_DRIVER = r'''
       document.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:x,clientY:y,button:0}));
     }
   }
+  function gestureDrag(item, target){
+    if(!item || !target) return false;
+    const a=item.getBoundingClientRect(), b=target.getBoundingClientRect();
+    // 落在目标条目的下半部，触发 runtime 的“插到末尾”路径；落在正中会被
+    // 解释成“插到目标前”，两项列表的顺序不会变化，产生假失败。
+    const sx=a.left+a.width/2, sy=a.top+a.height/2, ex=b.left+b.width/2,
+      ey=b.bottom-Math.min(1, b.height/4);
+    if(window.PointerEvent){
+      item.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:sx,clientY:sy,button:0,buttons:1,pointerId:23}));
+      document.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,cancelable:true,clientX:ex,clientY:ey,button:0,buttons:1,pointerId:23}));
+      document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:ex,clientY:ey,button:0,buttons:0,pointerId:23}));
+    }else{
+      item.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:sx,clientY:sy,button:0}));
+      document.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,cancelable:true,clientX:ex,clientY:ey,button:0}));
+      document.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:ex,clientY:ey,button:0}));
+    }
+    return true;
+  }
   function cfg(card){ try{return JSON.parse(card.el.dataset.interaction || '{}');}catch(e){return {};} }
 
   function attempt(card, correct){
@@ -376,18 +394,16 @@ PROBE_DRIVER = r'''
     if (kind === 'bucket'){
       const answer = c.answer || {}, ids = Object.keys(answer);
       if (!ids.length) return false;
-      const tray = document.querySelector('.bucket-tray');
-      if (!tray) return false;
       // 没有任何可用的错误目标时，不能把正确答案伪装成“错答”提交。
-      const allBuckets = qa('[data-drop][data-bucket-id]').map(n => String(n.dataset.bucketId));
+      const allBuckets = [...card.el.querySelectorAll('[data-drop][data-bucket-id]')]
+        .map(n => String(n.dataset.bucketId));
       const wrongBucket = allBuckets.find(id => id !== String(answer[ids[0]]));
       if (!correct && !wrongBucket) return false;
-      ids.forEach(id => { const item=document.querySelector(`.bucket-item[data-bucket-item="${CSS.escape(id)}"]`); if(item) tray.appendChild(item); });
       ids.forEach((id, i) => {
         let bucket = String(answer[id]);
         if (!correct && i === 0) bucket = wrongBucket;
-        const item = document.querySelector(`.bucket-item[data-bucket-item="${CSS.escape(id)}"]`);
-        const box = document.querySelector(`.bucket-drop[data-bucket-id="${CSS.escape(bucket)}"]`);
+        const item = card.el.querySelector(`.bucket-item[data-bucket-item="${CSS.escape(id)}"]`);
+        const box = card.el.querySelector(`[data-drop][data-bucket-id="${CSS.escape(bucket)}"]`);
         if(item && box){ gestureTap(item); tap(box); }
       });
       const submit = card.el.querySelector('[data-bucket-submit]');
@@ -427,6 +443,16 @@ PROBE_DRIVER = r'''
       items.forEach((item, i) => {
         if (item.dataset.gesture !== '1') report.failures.push(`${kind} 条目未接入手势：${i + 1}`);
       });
+    }
+    if (kind === 'sequence'){
+      const list = card.el.querySelector('.sequence-list');
+      const items = list ? [...list.querySelectorAll('.sequence-item')] : [];
+      if (items.length > 1){
+        const before = items.map(item => item.dataset.sequenceId).join(',');
+        gestureDrag(items[0], items[items.length - 1]);
+        const after = [...list.querySelectorAll('.sequence-item')].map(item => item.dataset.sequenceId).join(',');
+        if (before === after) report.failures.push('sequence 拖拽手势没有改变顺序');
+      }
     }
     const wrongDid = attempt(card, false);
     if (wrongDid){
