@@ -415,10 +415,9 @@ def _validate_args(parser, args):
             parser.error(str(e))
     if args.workers < 1:
         parser.error(f"--workers 至少为 1（收到 {args.workers}）")
-    # --bgm 指向不存在的文件时提前警告并忽略，而不是静默跳过混音
+    # 用户显式要求 BGM 时，缺失文件不能静默改变最终制品。
     if args.bgm and not os.path.exists(args.bgm):
-        print(f"[warn] --bgm 文件不存在，已忽略 BGM 混音：{args.bgm}", file=sys.stderr)
-        args.bgm = None
+        parser.error(f"--bgm 文件不存在：{args.bgm}")
 
 
 def _load_script_source(path):

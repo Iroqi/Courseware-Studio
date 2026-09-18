@@ -131,7 +131,7 @@ def _render_map(src: str) -> dict[str, str]:
 
 
 def _gate_scene_counts(src: str) -> dict[str, int]:
-    m = re.search(r"var\s+GATES\s*=\s*\[(.*?)\];", src, re.S)
+    m = re.search(r"(?:var|let|const)\s+GATES\s*=\s*\[(.*?)\];", src, re.S)
     if not m:
         return {}
     counts: dict[str, int] = {}
@@ -163,8 +163,8 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
         audio_match = re.search(r'\bsrc=["\']([^"\']+)["\']', audio_tag.group(0), re.I)
     if not audio_match:
         errors.append('#main-audio 缺少 src')
-    elif Path(audio_match.group(1).replace('\\','/')).name != 'combined.wav':
-        errors.append('最终音频必须统一引用 audio/combined.wav；不要让 BGM/响度处理产生第二个交付文件名')
+    elif audio_match.group(1).replace('\\', '/') != 'audio/combined.wav':
+        errors.append('最终音频必须精确引用 audio/combined.wav；不要引用外部 URL、父目录或其它同名文件')
 
     has_synth_failed = bool(re.search(r'"synth_failed"\s*:\s*true', src))
     if has_synth_failed and not allow_degraded:
@@ -376,13 +376,16 @@ PROBE_DRIVER = r'''
     if (kind === 'bucket'){
       const answer = c.answer || {}, ids = Object.keys(answer);
       if (!ids.length) return false;
-      const buckets = [...new Set(ids.map(id => String(answer[id])))];
       const tray = document.querySelector('.bucket-tray');
       if (!tray) return false;
+      // 没有任何可用的错误目标时，不能把正确答案伪装成“错答”提交。
+      const allBuckets = qa('[data-drop][data-bucket-id]').map(n => String(n.dataset.bucketId));
+      const wrongBucket = allBuckets.find(id => id !== String(answer[ids[0]]));
+      if (!correct && !wrongBucket) return false;
       ids.forEach(id => { const item=document.querySelector(`.bucket-item[data-bucket-item="${CSS.escape(id)}"]`); if(item) tray.appendChild(item); });
       ids.forEach((id, i) => {
         let bucket = String(answer[id]);
-        if (!correct && i === 0 && buckets.length > 1) bucket = buckets.find(x => x !== String(answer[id])) || bucket;
+        if (!correct && i === 0) bucket = wrongBucket;
         const item = document.querySelector(`.bucket-item[data-bucket-item="${CSS.escape(id)}"]`);
         const box = document.querySelector(`.bucket-drop[data-bucket-id="${CSS.escape(bucket)}"]`);
         if(item && box){ gestureTap(item); tap(box); }
@@ -415,6 +418,16 @@ PROBE_DRIVER = r'''
     }
     const before = gate.hidden;
     const kind = card.kind;
+    // sequence / bucket 的 QA 不能只直接改 DOM：这会绕过 runtime 的真实手势接线。
+    // runtime 在每个可拖拽条目上写 data-gesture="1"，以此确认动态生成的题目已重新接线。
+    if (kind === 'sequence' || kind === 'bucket'){
+      const items = qa(kind === 'sequence' ? '.sequence-item' : '.bucket-item')
+        .filter(n => card.el.contains(n));
+      if (!items.length) report.failures.push(`${kind} 缺少可交互条目`);
+      items.forEach((item, i) => {
+        if (item.dataset.gesture !== '1') report.failures.push(`${kind} 条目未接入手势：${i + 1}`);
+      });
+    }
     const wrongDid = attempt(card, false);
     if (wrongDid){
       await sleep(100);
