@@ -72,6 +72,8 @@ data-locked="1"
 
 页面层只依赖统一的 `audio + timing + text` 数据，不依赖某个 TTS 厂商。
 
+使用内置 `narration.py` 合成时，除 Python 外还需要可用的 `ffmpeg` 和 Python `openai` 包，以及 MiMo API key；只使用已有音频与 timing 时不需要这些 TTS 依赖。最终 `audio/` 目录只放 `combined.wav` 与 `narration_timing.json`；`--resume` 缓存位于同级 `.courseware-cache/` 或显式 `--cache-dir`。
+
 ## 3. 工作流
 
 | 步骤 | 输入 | 输出 |
@@ -200,7 +202,7 @@ el.dataset.locked = '1';
 2. **画面文字复述**：同幕 `txt()` / `badge()` 与旁白高度相似时给提示，抓“双字幕”；
 3. **门禁 / JS**：真实浏览器里自动走错答 → 正确答，检查句子边界、`data-locked`、继续按钮和 JS 错误。
 
-它是通用 QA，不是给某份课件单独维护的 SelfTest。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。
+它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer、音频路径和 gate 对应场景；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。
 
 ```bash
 python scripts/check_gates.py <页面目录或 index.html>
@@ -224,7 +226,7 @@ python scripts/check_gates.py <页面目录或 index.html> --require-browser  # 
 | `references/runtime.md` | runtime API 与 DOM 钩子 |
 | `references/template.html` | 真实页面范本 |
 | `references/template-narration.json` | 范本讲稿 |
-| `references/example-timeline.json` | 范本时间轴输出 |
+| `references/example-page-timeline.json` | `build_timeline.py` 的范本输出（页面内联形状，不是 `--timing` 输入） |
 
 ## 11. 交付前检查
 

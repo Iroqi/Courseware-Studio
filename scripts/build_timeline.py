@@ -213,7 +213,13 @@ def main():
     # --bare 是机器接口：stdout 必须只有 JSON。诊断信息统一走 stderr。
     if args.bare:
         report(scenes, total, stream=sys.stderr)
-        print(text)
+        if args.output:
+            os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+            with open(args.output, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            print(f"[out] {args.output}  ({len(text)} chars)", file=sys.stderr)
+        else:
+            print(text)
         return
 
     report(scenes, total)

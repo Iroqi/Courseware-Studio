@@ -134,10 +134,9 @@
 
   function wireInteractions(){
     document.querySelectorAll('[data-interaction]').forEach(el=>{
-      // 幂等：同一元素不重复挂监听。动态生成的交互块需要重新接线，靠
-      // __coursewareStudioWire 反复调用；没有这个标记，每调用一次就会多挂一层 click 监听。
-      if(el.dataset.wired==='1') return;
-      el.dataset.wired='1';
+      // 动态 gate 的 shell 在首次调用时还没有题目节点；openGate() 填入题目后
+      // 必须能再次扫描新增节点。不能在元素层直接 return：幂等性由 once() 和
+      // makeDraggable() 的节点级标记保证，既不会重复监听，也不会漏掉新节点。
       const config=parseConfig(el), kind=el.dataset.interactionType;
       // 模板里的 gate shell 初始只有空的 data-interaction，占位阶段不校验；
       // buildChoice/buildHotspot/buildBucket/buildSequence 写入真实配置后，openGate() 会再次接线并校验。
@@ -145,7 +144,7 @@
       // ── choice：单选 ───────────────────
       if(kind==='choice'){
         const fb=el.querySelector('.interaction-feedback');
-        el.querySelectorAll('[data-choice-id]').forEach(btn=>btn.addEventListener('click',()=>{
+        el.querySelectorAll('[data-choice-id]').forEach(btn=>once(btn,'click',()=>{
           if(el.dataset.locked==='1')return;
           const cfg=parseConfig(el);                       // 点击时再读：页面改了配置不用重接线
           const opts=cfg.options||cfg.choices||[];
@@ -167,7 +166,7 @@
       // 或门禁卡片里的示意图都行（画布被浮层盖着，把图放进卡片最稳，见 interactions.md §2.4）。
       if(kind==='hotspot'){
         const fb=el.querySelector('.interaction-feedback');
-        el.querySelectorAll('[data-hotspot-id]').forEach(spot=>spot.addEventListener('click',()=>{
+        el.querySelectorAll('[data-hotspot-id]').forEach(spot=>once(spot,'click',()=>{
           if(el.dataset.locked==='1')return;
           if(spot.dataset.hotspotState==='miss')return;    // 同一处点第二遍不重复反馈
           const cfg=parseConfig(el);

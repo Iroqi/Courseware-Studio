@@ -48,6 +48,8 @@ audio/combined.wav
 audio/narration_timing.json
 ```
 
+未使用 `--resume` 时，句子音频只保存在临时工作目录，结束后清理；使用 `--resume` 时，缓存默认写在 `audio/` 同级的 `.courseware-cache/audio/sentences/`，也可通过 `--cache-dir` 指定。无论哪种模式，`audio/` 交付目录只包含 `combined.wav` 与 `narration_timing.json`，不要把缓存目录当成成品模板。
+
 当前 `narration.py` 是 **MiMo TTS 适配器**；Courseware Studio 真正需要的是：
 
 ```text
@@ -57,6 +59,8 @@ audio/narration_timing.json
 未来可以由其它 TTS / 其它 skill 提供同样的数据，而不修改页面层。
 
 常用开关：`--dry-run`、`--resume`、`--speed`、段级 `speed` / `voice_id` / `voice_style`、`--on-fail silence`。
+
+`--bgm` 一旦指定就必须指向存在的文件；找不到会直接失败，避免最终成品静默缺少用户要求的背景音乐。
 
 改了语速就必须重新生成音频与时间轴。
 
@@ -68,6 +72,8 @@ python scripts/build_timeline.py \
   --source narration-source.json \
   -o timeline.html
 ```
+
+`--bare` 输出裸 JSON；与 `-o timeline.json` 联用时会把裸 JSON 写入该文件，诊断信息仍输出到 stderr。
 
 结果内联为：
 
