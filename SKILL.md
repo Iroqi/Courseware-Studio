@@ -3,7 +3,8 @@ name: courseware-studio
 description: >
   把讲稿或已有旁白做成一页会讲话的课件：单页 HTML、音频、逐句时间轴、画布内字幕、可选认知门禁。
   适合把一段已经想清楚的内容讲透；不负责掌握度、学习进度或复习系统。
-version: 1.6.1
+version: 1.6.2
+agent_created: true
 requires:
   python: ">=3.9"
 ---
