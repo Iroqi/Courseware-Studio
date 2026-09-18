@@ -5,8 +5,6 @@ description: >
   适合把一段已经想清楚的内容讲透；不负责掌握度、学习进度或复习系统。
 version: 1.6.2
 agent_created: true
-requires:
-  python: ">=3.9"
 ---
 
 # Courseware Studio
@@ -127,8 +125,8 @@ renderer 只回答：**当前句序号下，画布长什么样。**
 
 不要在 renderer 里：
 
-- 自己计时；
-- 自己 `requestAnimationFrame`；
+- 用 `setTimeout` / `setInterval` 排程后续视觉状态（一次性 rAF 补间除外）；
+- 推进句序号或维护另一套时间语义；
 - 自己写旁白句子；
 - 自己维护字幕；
 - 再造另一套时间判断。
@@ -203,7 +201,7 @@ el.dataset.locked = '1';
 2. **画面文字复述**：同幕 `txt()` / `badge()` 与旁白高度相似时给提示，抓“双字幕”；
 3. **门禁 / JS**：真实浏览器里自动走错答 → 正确答，检查句子边界、`data-locked`、继续按钮和 JS 错误。
 
-它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer、音频路径和 gate 对应场景；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。
+它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（含它自带 `setTimeout`/`setInterval` 排程）、音频路径和 gate 对应场景；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。
 
 ```bash
 python scripts/check_gates.py <页面目录或 index.html>
@@ -234,7 +232,7 @@ python scripts/check_gates.py <页面目录或 index.html> --require-browser  # 
 - [ ] 只有一个播放时钟：页面使用 `audio.currentTime`；
 - [ ] 字幕只来自 `runtime.narration[].text`；
 - [ ] 没有第二份字幕文案表；
-- [ ] renderer 不自带计时 / rAF；
+- [ ] renderer 不用 `setTimeout` / `setInterval` 自带计时（一次性 rAF 补间除外）；
 - [ ] 场景步数与旁白句数对得上；
 - [ ] 门禁只在场景开头或 `at:'end'` 开；
 - [ ] 对答才产生 `data-locked="1"`；

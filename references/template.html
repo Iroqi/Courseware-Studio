@@ -359,7 +359,7 @@
         <!-- ②b 门禁：**从画布内浮出**。放画布下面会被漏看——
              学习者的视线还在画布上，第一反应是"卡住了"。
              四块卡片 = 四种判定形态，开哪块由 openGate 决定；形态怎么挑见
-             interactions.md §2.4。用不上的那几块可以不写进页面。 -->
+             interactions.md §2。用不上的那几块可以不写进页面。 -->
         <section class="gate" id="gate" hidden>
           <div class="g-card">
             <p class="kick">播放已暂停 · 答对后继续</p>
@@ -639,7 +639,7 @@
         'font-weight':'700', fill:'#8d95a8'}, '='));
     }
     // 图内短标注（**不是口播原句**）：s4「只看符号」、s5「升降序」各给一个独立标签——
-    // 这些是图元的标注/公式，与旁白那句话不同（判据见 stage.md §1）
+    // 这些是图元的标注/公式，与旁白那句话不同（判据见 stage.md §2 纪律 3）
     var footFill, footText;
     if (pick === -1){ footFill = '#8d95a8'; footText = '（比较函数决定 a 与 b 的先后）'; }
     else if (step === 4){ footFill = '#8d95a8'; footText = '符号相同 = 结果相同：只看 ± 与 0'; }
@@ -884,9 +884,9 @@
   renderNotes();
 
   // ══ ⑤ 门禁：唯一的证据通道。四种形态各一（真课件挑 1–2 道、最多 3 道，见
-  //    interactions.md §2.4；这里放四种是为了把机制演示全，不是让你照抄数量） ═══════
+  //    interactions.md §2；这里放四种是为了把机制演示全，不是让你照抄数量） ═══════
   // 形态由"要考的判断"决定：定义→choice · 部位→hotspot · 归类→bucket · 时序→sequence。
-  // 三道 at:'end' 的锚点都是**末句播完**那一刻（§2.5）——别按"读到末句就开"，
+  // 三道 at:'end' 的锚点都是**末句播完**那一刻（interactions.md §3）——别按"读到末句就开"，
   // 那等于在末句开头停，正好掐断它要考的那句话。
   var GATES = [
     // ① sequence：考前面讲过的流程（挂场景开头）
@@ -904,7 +904,7 @@
             {id:'c', t:'[10, 2, 1]'}],
       fb:{right:'对。字符串序："1" < "10" < "2"，因为第二位 0 < 2。',
           wrong:'按字符串序想：先比第一位，都是 "1" 和 "2"… 再想第二步。'} },
-    // ③ hotspot：在图上点部位（这张图是卡里那张，见 §2.4「可点区放哪」）
+    // ③ hotspot：在图上点部位（这张图是卡里那张，见 interactions.md §2「可点区放哪」）
     { scene:'seg-4', at:'end', type:'hotspot', preGate:true,
       q:'「ab」比「abc」小——这个结论是在哪一步定下来的？在图上点出那一步。',
       spots:[{id:'step1', t:'逐位比较并向后推进',
@@ -959,12 +959,12 @@
       n.classList.remove('is-correct','is-wrong'); n.textContent = ''; });
   }
 
-  // preGate 引导过渡（interactions.md §2.5）：一次性 setTimeout（非 setInterval），
+  // preGate 引导过渡（interactions.md §3）：一次性 setTimeout（非 setInterval），
   // 先显 ~1.1s 缓冲浮层（里面有会走完的进度环）、同时冻结音频，再揭开题目卡
   function preGateOpen(i, cb){
     var g = GATES[i];
     if (!audio.paused) audio.pause();
-    // 冻结 + 回退到场景起点。例外：at:'end' 的题面就是刚讲完那句，回退等于重播整场（§2.1）
+    // 冻结 + 回退到场景起点。例外：at:'end' 的题面就是刚讲完那句，回退等于重播整场（interactions.md §3）
     var sc = scenes[sceneIndexOf(g.scene)];
     if (sc && g.at !== 'end') audio.currentTime = sc.runtime.start;
     if (g.preGate){
@@ -1011,7 +1011,7 @@
     });
   }
   function buildSequence(g, c){
-    // 钩子名逐字对齐 interactions.md §4：.sequence-list / .sequence-item /
+    // 钩子名逐字对齐 runtime.md §2：.sequence-list / .sequence-item /
     // [data-sequence-submit] —— 类名写错运行时只是不接线、表现"拖不动"
     var cfg = g.seq || {};
     c.dataset.interaction = JSON.stringify({ correct_order: cfg.correct || [] });
@@ -1038,7 +1038,7 @@
     clearGateCards();
     gateNext.hidden = true;
     c.hidden = false;
-    ['locked','wired','completed','selected'].forEach(function(k){ delete c.dataset[k]; });
+    ['locked','completed','selected'].forEach(function(k){ delete c.dataset[k]; });
     BUILD[t](g, c);
     // 上一题答对时运行时禁用了卡里所有按钮；重开要放回来（否则这一次点不动）
     Array.prototype.forEach.call(c.querySelectorAll('button'), function(b){ b.disabled = false; });
@@ -1054,7 +1054,7 @@
   }
 
   // 出场也要有过渡：先淡出上移（.leaving），动画走完再盖上 hidden。
-  // 音频等这 240ms 过去才起播——否则旁白在还压着暗的画布底下就开口了（§2.5）
+  // 音频等这 240ms 过去才起播——否则旁白在还压着暗的画布底下就开口了（interactions.md §3）
   function closeGate(instant){
     el('rack').dataset.gated = '0';     // 播放器行不参与淡出，立刻放回来（写 '0'，别 delete）
     gateNext.hidden = true; gOpen = -1;
@@ -1091,7 +1091,7 @@
     gateObs.observe(CARDS[k], {attributes:true, attributeFilter:['data-locked']});
   });
 
-  // 锚点：门禁只在**句子边界**开（interactions.md §2.5）。
+  // 锚点：门禁只在**句子边界**开（interactions.md §3）。
   //   默认（挂场景开头）→ 场景起点：这一场还没开播，掐不到任何话。
   //   at:'end'          → 本场**末句播完**那一刻，也就是场景之间的空档。
   // 旧写法按 index === last 判，那是在末句**开头**就停 —— 正好掐断它要考的那句话。

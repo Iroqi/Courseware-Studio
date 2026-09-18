@@ -110,7 +110,7 @@ el.dataset.locked = '1';
 window.coursewareStudioWire();
 ```
 
-入口幂等：已有 `data-wired="1"` 的元素不会重复绑定。动态 gate shell 初始可以只有空的 `data-interaction` 占位；真正配置写入后，runtime 会严格校验题型契约。
+入口幂等：runtime 用节点级 `data-bound` / `data-gesture` 标记保证重复接线不叠加监听、不重复绑定。动态 gate shell 初始可以只有空的 `data-interaction` 占位；真正配置写入后，runtime 会严格校验题型契约（校验失败会先把其余块接完，再统一抛错给 QA 捕获）。
 
 ## 5. 配置契约
 

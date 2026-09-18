@@ -132,8 +132,7 @@
     });
   }
 
-  function wireInteractions(){
-    document.querySelectorAll('[data-interaction]').forEach(el=>{
+  function wireBlock(el){
       // 动态 gate 的 shell 在首次调用时还没有题目节点；openGate() 填入题目后
       // 必须能再次扫描新增节点。不能在元素层直接 return：幂等性由 once() 和
       // makeDraggable() 的节点级标记保证，既不会重复监听，也不会漏掉新节点。
@@ -163,7 +162,7 @@
       // ── hotspot：在图上点部位 ──────────────────────────────────────────
       // 判定与单选同形（config.options[{id,correct,feedback}]），差别只在"答案不是一个句子，
       // 而是图上的一处"。可点区是任何带 [data-hotspot-id] 的元素：画布上的真图形、
-      // 或门禁卡片里的示意图都行（画布被浮层盖着，把图放进卡片最稳，见 interactions.md §2.4）。
+      // 或门禁卡片里的示意图都行（画布被浮层盖着，把图放进卡片最稳，见 interactions.md §2）。
       if(kind==='hotspot'){
         const fb=el.querySelector('.interaction-feedback');
         el.querySelectorAll('[data-hotspot-id]').forEach(spot=>once(spot,'click',()=>{
@@ -197,7 +196,7 @@
               fb.textContent=cfg.wrong_text||'顺序还不对，再调整一次。';}
             return;
           }
-          // 排对之后**必须**走 finish(correct:true)：data-locked 是页面唯一的放行信号（runtime.md §4.1）
+          // 排对之后**必须**走 finish(correct:true)：data-locked 是页面唯一的放行信号（runtime.md §3）
           finish(el,cfg.hit_text||'顺序正确。',{correct:true,detail:order.join(',')});
         });
       }
@@ -263,9 +262,24 @@
       }
       once(el.querySelector('[data-hint-action]'),'click',()=>{
         const h=el.querySelector('.interaction-hint'); if(h)h.hidden=!h.hidden;});
-    });
   }
 
-  wireInteractions();
+  function wireInteractions(){
+    // 单块契约违规不拖垮其它块：逐块接线、收集失败，最后统一抛出，
+    // 保留"浏览器 QA 捕获 JSERR"的契约（runtime.md §5）。
+    const errors=[];
+    document.querySelectorAll('[data-interaction]').forEach(el=>{
+      try{ wireBlock(el); }catch(e){ errors.push(e); }
+    });
+    if(errors.length){
+      const first=errors[0];
+      throw errors.length>1
+        ? new Error(first.message+'（另有 '+(errors.length-1)+' 处交互契约违规）')
+        : first;
+    }
+  }
+
+  // 先暴露再首接线：首接线抛契约错时 coursewareStudioWire 也必须已经可用。
   window.coursewareStudioWire = wireInteractions;
+  wireInteractions();
 })();

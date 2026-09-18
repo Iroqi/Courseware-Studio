@@ -35,6 +35,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _script_utils import setup_stdio  # noqa: E402
+
 
 _CAP_LEN_MIN = 10
 _CAP_SIM_MIN = 0.75
@@ -246,6 +249,15 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
         elif fn != 'function(' and fn not in bodies:
             errors.append(f'{sid}: renderer {fn} 没有找到 function 实现')
 
+    # renderer 计时纪律：句序号是唯一视觉时钟（stage.md 纪律 1）。
+    for name in sorted(bodies):
+        body = bodies[name]
+        sched = sorted(set(re.findall(r'\b(setTimeout|setInterval)\s*\(', body)))
+        if sched:
+            errors.append(f'renderer {name} 用 {" / ".join(sched)} 排程后续视觉状态')
+        elif re.search(r'\brequestAnimationFrame\s*\(', body):
+            warnings.append(f'renderer {name} 使用 requestAnimationFrame：只允许一次性补间，不得推进句序号')
+
     # 一个 scene 最多挂一个 gate；当前 runtime 的 gate-host 是单槽位，不允许静默覆盖。
     gate_counts = _gate_scene_counts(src)
     scene_set = {str(scene.get('step_id', '')).strip() for scene in scenes}
@@ -313,6 +325,7 @@ PROBE_DRIVER = r'''
   const out = q('#courseware-check-report');
   const timeline = JSON.parse(q('#lesson-timeline').textContent);
   const scenes = timeline.scenes || [];
+  const gateScenes = new Set(__GATE_SCENES_JSON__);
   const audio = q('#main-audio');
   const gate = q('#gate');
   let prevErrorHandler = window.onerror;
@@ -413,26 +426,19 @@ PROBE_DRIVER = r'''
     return false;
   }
 
-  async function waitGateReveal(){
-    for(let i=0;i<20;i++){
-      if(!q('#pregate').hidden) await sleep(80);
-      if(!q('#pregate').hidden){ await sleep(120); continue; }
-      if(!gate.hidden) return true;
-      await sleep(60);
-    }
-    return !gate.hidden;
-  }
-
   async function testGate(time, sentence){
     const card = currentCard();
-    if (!card) return false;
-    const sceneId = q('#gate-host').dataset.stepId || '';
+    if (!card){
+      report.failures.push('门禁已打开，但卡内没有可见的 [data-interaction] 题目');
+      return false;
+    }
+    const host = q('#gate-host');
+    const sceneId = (host && host.dataset.stepId) || '';
     if (!sceneId) report.failures.push('门禁缺少 gate-host.dataset.stepId');
     if (sentence){
       const frac = (time - sentence.start) / sentence.duration;
       if (frac > 0.08 && frac < 0.92) report.failures.push(`门禁落在句中间：${sceneId} ${Math.round(frac*100)}%`);
     }
-    const before = gate.hidden;
     const kind = card.kind;
     // sequence / bucket 的 QA 不能只直接改 DOM：这会绕过 runtime 的真实手势接线。
     // runtime 在每个可拖拽条目上写 data-gesture="1"，以此确认动态生成的题目已重新接线。
@@ -454,11 +460,13 @@ PROBE_DRIVER = r'''
         if (before === after) report.failures.push('sequence 拖拽手势没有改变顺序');
       }
     }
+    const nextBtn = q('#gate-next');
+    if (!nextBtn) report.failures.push('门禁缺少 #gate-next 继续按钮');
     const wrongDid = attempt(card, false);
     if (wrongDid){
       await sleep(100);
       if (lockOf(card)) report.failures.push(`错答后仍锁定：${kind}`);
-      if (!q('#gate-next').hidden) report.failures.push(`错答后出现继续按钮：${kind}`);
+      if (nextBtn && !nextBtn.hidden) report.failures.push(`错答后出现继续按钮：${kind}`);
     } else {
       report.warnings.push(`门禁 ${kind} 未能构造错误路径，仅检查正确路径`);
     }
@@ -467,40 +475,56 @@ PROBE_DRIVER = r'''
     if (!rightDid){ report.failures.push(`无法构造正确路径：${kind}`); return true; }
     await sleep(120);
     if (!lockOf(card)) report.failures.push(`答对后未锁定：${kind}`);
-    if (q('#gate-next').hidden) report.failures.push(`答对后没有继续按钮：${kind}`);
-    report.gates.push({scene:sceneId, kind, time, wrongTested:wrongDid, correctTested:rightDid, wasHidden:before});
+    if (nextBtn && nextBtn.hidden) report.failures.push(`答对后没有继续按钮：${kind}`);
+    report.gates.push({scene:sceneId, kind, time, wrongTested:wrongDid, correctTested:rightDid});
     return true;
   }
 
   async function run(){
     if(!audio || !q('#lesson-timeline') || !q('#cap-text')){
       report.failures.push('缺少 audio / timeline / caption 节点');
+      out.textContent = JSON.stringify(report);
+      document.title = 'courseware-check FAIL';
+      return;
     }
     const caption = q('#cap-text');
 
     // 先把所有门禁走完。这样后面的字幕逐句核对不会被门禁的 preGate 回退干扰。
+    // candidates 标注该 scene 是否配了 gate：配了的要等 preGate 过渡结束再判断，
+    // 不能 fire 后 15ms 看没开就跳过（那会把全部门禁静默漏检）。
     const candidates = [];
     scenes.forEach(scene => {
-      candidates.push(Number(scene.runtime.start));
+      const sid = String(scene.step_id);
+      const hasGate = gateScenes.has(sid);
+      candidates.push({time:Number(scene.runtime.start), hasGate:hasGate});
       const ns = scene.runtime.narration || [];
-      if(ns.length) candidates.push(Number(ns[ns.length-1].start) + Number(ns[ns.length-1].duration));
+      if(ns.length) candidates.push({time:Number(ns[ns.length-1].start) + Number(ns[ns.length-1].duration), hasGate:hasGate});
     });
     const seenGateScenes = new Set();
-    for(const time of candidates){
-      fire(time);
-      await sleep(15);
-      if(gate.hidden) continue;
-      if(!await waitGateReveal()) continue;
-      const sid=q('#gate-host').dataset.stepId || '';
-      if(seenGateScenes.has(sid)) continue;
-      const scene=scenes.find(x=>x.step_id===sid);
-      const nlist=scene ? scene.runtime.narration || [] : [];
-      let probeSentence=null;
-      for(const n of nlist){ if(time >= n.start && time < n.start+n.duration){probeSentence=n;break;} }
-      await testGate(time, probeSentence);
-      seenGateScenes.add(sid);
-      const go=q('#gate-go'); if(go && !go.disabled) go.click();
-      await sleep(260);
+    if (gateScenes.size && !gate) report.failures.push('检测到 GATES 配置，但页面没有 #gate 浮层');
+    if (gate){
+      for(const cand of candidates){
+        fire(cand.time);
+        await sleep(30);
+        if (gate.hidden && cand.hasGate){
+          for(let i=0;i<42 && gate.hidden;i++) await sleep(60);   // 等 preGate（≤2.5s）
+        }
+        if (gate.hidden) continue;
+        const host = q('#gate-host');
+        const sid = (host && host.dataset.stepId) || '';
+        if (seenGateScenes.has(sid)) continue;
+        seenGateScenes.add(sid);
+        const scene = scenes.find(x => String(x.step_id) === sid);
+        const nlist = scene ? scene.runtime.narration || [] : [];
+        let probeSentence = null;
+        for(const n of nlist){ if(cand.time >= Number(n.start) && cand.time < Number(n.start) + Number(n.duration)){ probeSentence = n; break; } }
+        await testGate(cand.time, probeSentence);
+        const go = q('#gate-go'); if(go && !go.disabled) go.click();
+        await sleep(260);
+      }
+      for(const sid of gateScenes){
+        if(!seenGateScenes.has(sid)) report.failures.push(`GATES 配置了 ${sid}，但门禁从未弹出`);
+      }
     }
 
     // 字幕核对：每句取中点，要求画布字幕逐字等于时间轴原文。
@@ -520,18 +544,22 @@ PROBE_DRIVER = r'''
     }
 
     // 场景之间的短空档不能把上一句字幕抹掉，否则换场时会闪白。
+    // 探测前先把字幕重新定标到本场末句：直接 fire 空档点时，画面上残留的是
+    // 上一轮扫描（时间线末尾）的字幕，比较对象错位会产生系统性误报。
     for(let i=0;i<scenes.length-1;i++){
       const a=scenes[i], b=scenes[i+1];
       const ns=a.runtime.narration || [];
       if(!ns.length) continue;
-      const end=Number(ns[ns.length-1].start)+Number(ns[ns.length-1].duration);
+      const last=ns[ns.length-1];
+      const end=Number(last.start)+Number(last.duration);
       const gap=Number(b.runtime.start)-end;
       if(gap > 0.08){
-        const probe=end+Math.min(0.05, gap/2);
-        fire(probe);
+        fire(Number(last.start) + Math.min(0.05, Number(last.duration) * 0.5));
+        await sleep(0);
+        fire(end + Math.min(0.05, gap/2));
         await sleep(0);
         const got=(caption.textContent||'').trim();
-        const expected=String(ns[ns.length-1].text||'').trim();
+        const expected=String(last.text||'').trim();
         if(got !== expected) report.failures.push(`换场空档字幕被清掉：${a.step_id}`);
       }
     }
@@ -564,9 +592,21 @@ def _find_chrome() -> str | None:
         "/usr/bin/chromium-browser",
         "/usr/bin/microsoft-edge",
     ]
+    # 本用户目录下的 Chrome/Edge（per-user 安装不进 Program Files）
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        cands += [
+            os.path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            os.path.join(local, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+            os.path.join(local, 'Chromium', 'Application', 'chrome.exe'),
+        ]
     for c in cands:
         if os.path.exists(c):
             return c
+    for name in ('chrome', 'google-chrome', 'chromium', 'msedge', 'microsoft-edge'):
+        found = shutil.which(name)
+        if found:
+            return found
     return None
 
 
@@ -585,10 +625,13 @@ def _build_probe(page: Path, out: Path, runtime_src: Path) -> None:
         # probe 永远 inline 页面实际使用的 runtime，避免临时目录改变相对 src 后悄悄变成 404。
         src = src.replace(tag, '<script>\n' + runtime + '\n</script>', 1)
     src = re.sub(r'(<script\b[^>]*\bid=["\']lesson-timeline["\'][^>]*>)', PROBE_STUB + r'\n\1', src, count=1, flags=re.I)
+    driver = PROBE_DRIVER.replace(
+        '__GATE_SCENES_JSON__',
+        json.dumps(sorted(_gate_scene_counts(src)), ensure_ascii=False))
     if '</body>' in src:
-        src = src.replace('</body>', PROBE_DRIVER + '</body>', 1)
+        src = src.replace('</body>', driver + '</body>', 1)
     else:
-        src += PROBE_DRIVER
+        src += driver
     out.write_text(src, encoding='utf-8')
 
 
@@ -662,11 +705,11 @@ def browser_check(page: Path, runtime_src: Path, keep: bool = False) -> dict[str
         '--no-default-browser-check', '--disable-dev-shm-usage', '--allow-file-access-from-files',
         '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding', f'--user-data-dir={profile}',
-        '--run-all-compositor-stages-before-draw', '--virtual-time-budget=15000', '--dump-dom',
+        '--run-all-compositor-stages-before-draw', '--virtual-time-budget=40000', '--dump-dom',
         'file:///' + str(probe).replace('\\', '/'),
     ]
     try:
-        rc = _run_chrome(cmd, dom, log, timeout=30)
+        rc = _run_chrome(cmd, dom, log, timeout=60)
         raw = dom.read_text(encoding='utf-8', errors='replace') if dom.exists() else ''
         m = re.search(r'<pre id="courseware-check-report">(.*?)</pre>', raw, re.S)
         if not m:
@@ -680,7 +723,7 @@ def browser_check(page: Path, runtime_src: Path, keep: bool = False) -> dict[str
         report.setdefault('browser_rc', rc)
         return report
     except subprocess.TimeoutExpired:
-        return {"ok": False, "errors": ["浏览器冒烟检查超过 30s，已中止"], "failures": [], "warnings": [], "stats": {}}
+        return {"ok": False, "errors": ["浏览器冒烟检查超过 60s，已中止"], "failures": [], "warnings": [], "stats": {}}
     finally:
         if not keep:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -689,6 +732,7 @@ def browser_check(page: Path, runtime_src: Path, keep: bool = False) -> dict[str
 
 
 def main() -> int:
+    setup_stdio()   # 中文 Windows 管道重定向下 stdout 默认 gbk，中文章节标题会乱码
     ap = argparse.ArgumentParser(description='Courseware Studio 交付检查：字幕 + 时间轴 + 门禁 + JS')
     ap.add_argument('page', help='页面目录（含 index.html）或某个 .html 路径')
     ap.add_argument('--no-browser', action='store_true', help='只做静态检查，不启动 Chrome/Edge')

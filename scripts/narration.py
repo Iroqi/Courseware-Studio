@@ -572,10 +572,12 @@ def _finalize_audio(args, ffmpeg_path, sentence_data, source_data, seg_config,
         sentences_out.append(entry)
 
     scenes = []
+    # 按句子的原始 index 切场，不按列表位置：整句被丢弃（静音兜底也失败）时
+    # 位置会整体前移，用 enumerate 会把后面的句子静默切进错误段落。
     for seg in seg_config or []:
         start_idx, end_idx = seg["start"], seg["end"]   # 0-based / exclusive
-        seg_sentences = [e for i, e in enumerate(sentences_out)
-                         if start_idx <= i < end_idx]
+        seg_sentences = [e for e, src_s in zip(sentences_out, sentence_data)
+                         if start_idx <= src_s["index"] < end_idx]
         if not seg_sentences:
             # 该段所有句子都没产出音频（TTS 连续失败 + --on-fail abort，或段落本身
             # 被上游丢空）。报出来，而不是写一份下游读不懂的空场景。
@@ -614,8 +616,10 @@ def _finalize_audio(args, ffmpeg_path, sentence_data, source_data, seg_config,
     write_json_atomic(manifest_path, timing, indent=2)
 
     print(f"\n[manifest] {manifest_path}", flush=True)
-    print(f"[stats] {len(sentence_data)}/{total_sentences} 句成功（{cached_count} 句复用缓存）",
-          flush=True)
+    ok_count = len(sentence_data) - silence_fallback_count
+    degraded_note = f"，{silence_fallback_count} 句静音占位" if silence_fallback_count else ""
+    print(f"[stats] {ok_count}/{total_sentences} 句成功{degraded_note}"
+          f"（{cached_count} 句复用缓存）", flush=True)
     print(f"[duration] {total_dur:.2f}s", flush=True)
 
 

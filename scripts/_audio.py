@@ -9,6 +9,7 @@ import subprocess
 import re
 import shutil
 import sys
+import tempfile
 import wave
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -177,68 +178,65 @@ def _remove_quiet(path):
 
 
 def concat_audio(ffmpeg_path, file_list, gap_sec, out_path):
-    """Concatenate audio files with silence gaps. Uses absolute paths (Windows safe)."""
-    out_dir = os.path.dirname(os.path.abspath(out_path))
-    list_file = os.path.join(out_dir, "_concat_list.txt")
-    silence_file = os.path.join(out_dir, "_silence.wav")
+    """Concatenate audio files with silence gaps. Uses absolute paths (Windows safe).
 
-    if gap_sec > 0:
-        try:
-            generate_silence(ffmpeg_path, gap_sec, silence_file)
-        except RuntimeError as e:
-            # generate_silence 现在失败时抛错（不再落 0 字节空文件）；
-            # concat 的错误契约是返回 bool，这里转成 False 而不是裸栈。
-            print(f"  [concat] gap 静音生成失败: {e}", file=sys.stderr)
-            return False
+    列表 / 静音临时文件放系统临时目录（列表内引用绝对路径，位置无关），
+    交付目录只会出现 out_path；TemporaryDirectory 保证异常路径也清理。
+    """
+    with tempfile.TemporaryDirectory(prefix="courseware-concat-") as tmp_dir:
+        list_file = os.path.join(tmp_dir, "concat_list.txt")
+        silence_file = os.path.join(tmp_dir, "silence.wav")
 
-    with open(list_file, 'w', encoding='utf-8') as f:
-        for i, fp in enumerate(file_list):
-            # Always use absolute paths — relative paths fail silently on Windows
-            abs_fp = os.path.abspath(fp).replace("\\", "/")
-            # 路径含单引号时按 ffmpeg concat demuxer 规则转义（'\'' =
-            # 关引号-转义引号-重开引号），英文用户名 O'Brien 这类会炸
-            _esc = abs_fp.replace("'", "'\\''")
-            f.write(f"file '{_esc}'\n")
-            if i < len(file_list) - 1 and gap_sec > 0:
-                abs_silence = os.path.abspath(silence_file).replace("\\", "/")
-                f.write(f"file '{abs_silence}'\n")
+        if gap_sec > 0:
+            try:
+                generate_silence(ffmpeg_path, gap_sec, silence_file)
+            except RuntimeError as e:
+                # generate_silence 现在失败时抛错（不再落 0 字节空文件）；
+                # concat 的错误契约是返回 bool，这里转成 False 而不是裸栈。
+                print(f"  [concat] gap 静音生成失败: {e}", file=sys.stderr)
+                return False
 
-    # encoding/errors 显式指定（理由同 generate_silence）；TimeoutExpired
-    # 单独接住——原路径直接穿透，跳过下方临时文件清理且裸栈到 main。
-    result = None
-    try:
-        result = subprocess.run([
-            ffmpeg_path, "-y", "-f", "concat", "-safe", "0",
-            "-i", list_file, "-c", "copy", out_path
-        ], capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=120)
-    except subprocess.TimeoutExpired:
-        print("  [concat] ffmpeg concat 超时（copy 路径），尝试重编码",
-              file=sys.stderr)
+        with open(list_file, 'w', encoding='utf-8') as f:
+            for i, fp in enumerate(file_list):
+                # Always use absolute paths — relative paths fail silently on Windows
+                abs_fp = os.path.abspath(fp).replace("\\", "/")
+                # 路径含单引号时按 ffmpeg concat demuxer 规则转义（'\'' =
+                # 关引号-转义引号-重开引号），英文用户名 O'Brien 这类会炸
+                _esc = abs_fp.replace("'", "'\\''")
+                f.write(f"file '{_esc}'\n")
+                if i < len(file_list) - 1 and gap_sec > 0:
+                    abs_silence = os.path.abspath(silence_file).replace("\\", "/")
+                    f.write(f"file '{abs_silence}'\n")
 
-    if result is None or result.returncode != 0:
-        # Fallback: re-encode (handles codec mismatch)
+        # encoding/errors 显式指定（理由同 generate_silence）；TimeoutExpired
+        # 单独接住——原路径直接穿透会裸栈到 main（临时目录本身由
+        # TemporaryDirectory 保证清理）。
+        result = None
         try:
             result = subprocess.run([
                 ffmpeg_path, "-y", "-f", "concat", "-safe", "0",
-                "-i", list_file, "-ar", "24000", "-ac", "1", out_path
+                "-i", list_file, "-c", "copy", out_path
             ], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=120)
         except subprocess.TimeoutExpired:
-            print("  [concat] ffmpeg concat 超时（重编码路径）", file=sys.stderr)
-            result = None
-        if result is not None and result.returncode != 0:
-            print(f"  [concat stderr] {result.stderr[-500:]}", file=sys.stderr)
+            print("  [concat] ffmpeg concat 超时（copy 路径），尝试重编码",
+                  file=sys.stderr)
 
-    # Cleanup temp files
-    for tmp in [list_file, silence_file]:
-        if os.path.exists(tmp):
+        if result is None or result.returncode != 0:
+            # Fallback: re-encode (handles codec mismatch)
             try:
-                os.remove(tmp)
-            except OSError:
-                pass
+                result = subprocess.run([
+                    ffmpeg_path, "-y", "-f", "concat", "-safe", "0",
+                    "-i", list_file, "-ar", "24000", "-ac", "1", out_path
+                ], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=120)
+            except subprocess.TimeoutExpired:
+                print("  [concat] ffmpeg concat 超时（重编码路径）", file=sys.stderr)
+                result = None
+            if result is not None and result.returncode != 0:
+                print(f"  [concat stderr] {result.stderr[-500:]}", file=sys.stderr)
 
-    return result is not None and result.returncode == 0
+        return result is not None and result.returncode == 0
 
 
 def mix_bgm(ffmpeg_path, voice_path, bgm_path, bgm_volume, out_path):

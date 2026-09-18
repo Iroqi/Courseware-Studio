@@ -48,7 +48,7 @@ audio/combined.wav
 audio/narration_timing.json
 ```
 
-未使用 `--resume` 时，句子音频只保存在临时工作目录，结束后清理；使用 `--resume` 时，缓存默认写在 `audio/` 同级的 `.courseware-cache/audio/sentences/`，也可通过 `--cache-dir` 指定。无论哪种模式，`audio/` 交付目录只包含 `combined.wav` 与 `narration_timing.json`，不要把缓存目录当成成品模板。
+未使用 `--resume` 时，句子音频只保存在临时工作目录，结束后清理；使用 `--resume` 时，缓存默认写在输出目录同级的 `.courseware-cache/<输出目录名>/sentences/`（输出目录名为 `audio` 时即 `.courseware-cache/audio/sentences/`），也可通过 `--cache-dir` 指定。无论哪种模式，`audio/` 交付目录只包含 `combined.wav` 与 `narration_timing.json`，不要把缓存目录当成成品模板。
 
 当前 `narration.py` 是 **MiMo TTS 适配器**；Courseware Studio 真正需要的是：
 
