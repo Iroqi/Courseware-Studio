@@ -197,11 +197,12 @@ el.dataset.locked = '1';
 
 它现在是**课件交付检查器**，字幕检查是核心职责之一：
 
-1. **时间轴 / 字幕**：时间合法、句子不重叠、字幕节点存在，并在浏览器中验证每句字幕是否精确等于时间轴原文；
+1. **时间轴 / 字幕**：时间合法、句子不重叠、字幕节点存在，并在浏览器中验证每句字幕是否精确等于时间轴原文、是否**真的可见**（沿祖先链查 `opacity` / `visibility` / `hidden`），并校验场景空档是否按约定保留上一句字幕；
 2. **画面文字复述**：同幕 `txt()` / `badge()` 与旁白高度相似时给提示，抓“双字幕”；
-3. **门禁 / JS**：真实浏览器里自动走错答 → 正确答，检查句子边界、`data-locked`、继续按钮和 JS 错误。
+3. **门禁 / JS**：真实浏览器里自动走错答 → 正确答，检查句子边界、`data-locked`、继续按钮；门禁检测是**活动驱动**的（页面真把门禁弹出来就会被测，不依赖 `var GATES = [...]` 字面量），配了却从未弹出的门禁会被报出；
+4. **JS 错误**：探针脚本注入到 `<head>` 最前，页面**加载期**抛出的错误（早于任何业务脚本，包括 runtime 契约错误）也会被抓进报告。
 
-它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（含它自带 `setTimeout`/`setInterval` 排程）、音频路径和 gate 对应场景；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。
+它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（`RENDER` 引用的具名函数与内联匿名体里不得用 `setTimeout`/`setInterval` 排程，解析已剥离字符串/注释防误报）、音频路径和 gate 对应场景（超过 4 道门禁给警告）；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。浏览器冒烟的虚拟时间预算按场景数扩容。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。检查依赖的页面 DOM 契约（`#main-audio`、`#lesson-timeline`、`#cap-text[data-courseware-caption]`、`#gate` 等）见 `references/runtime.md` §7。
 
 ```bash
 python scripts/check_gates.py <页面目录或 index.html>
@@ -232,11 +233,13 @@ python scripts/check_gates.py <页面目录或 index.html> --require-browser  # 
 - [ ] 只有一个播放时钟：页面使用 `audio.currentTime`；
 - [ ] 字幕只来自 `runtime.narration[].text`；
 - [ ] 没有第二份字幕文案表；
+- [ ] 场景空档保留上一句字幕（不清空、不闪白）；
 - [ ] renderer 不用 `setTimeout` / `setInterval` 自带计时（一次性 rAF 补间除外）；
 - [ ] 场景步数与旁白句数对得上；
 - [ ] 门禁只在场景开头或 `at:'end'` 开；
 - [ ] 对答才产生 `data-locked="1"`；
-- [ ] 动态交互建成后调用 `window.coursewareStudioWire()`；
+- [ ] 动态交互建成后调用 `window.coursewareStudioWire()`，且调用点在揭开门禁浮层**之前**（契约抛错不能留下半开的门禁）；
+- [ ] QA 契约的 DOM 钩子（`#gate` / `#gate-host` / `#gate-go` / `#pregate` 等）与 `references/runtime.md` §7 一致；
 - [ ] 页面没有为本课件单独新增校验脚本；
 - [ ] 运行 `check_gates.py`；
 - [ ] 成品目录没有巡检副本、截图、日志等残留。

@@ -54,23 +54,108 @@ def _cap_norm(text: str) -> str:
     return text.strip()
 
 
-def _cap_extract_bodies(src: str) -> dict[str, str]:
-    bodies: dict[str, str] = {}
-    for m in re.finditer(r"function\s+(render\w+)\s*\(\s*step\s*\)\s*\{", src):
-        name = m.group(1)
-        i = m.end() - 1
-        depth = 0
-        j = i
-        while j < len(src):
-            c = src[j]
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    bodies[name] = src[m.end() : j]
+def _js_strip(src: str) -> str:
+    """剥掉 JS 源码里的字符串/模板串/正则字面量/注释（内容替换为空格，保持偏移）。
+
+    renderer 体提取与计时检查先过这一层，避免 var brace='{' 或注释里的
+    括号把配对扫描带偏、也避免注释里的 setTimeout 误报。
+    """
+    out = list(src)
+    n = len(src)
+    i = 0
+    prev_sig = ''  # 上一个有意义的非空白字符，用于区分除法与正则
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if src[k] != '\n':
+                out[k] = ' '
+
+    while i < n:
+        c = src[i]
+        if c == '/' and i + 1 < n and src[i + 1] == '/':
+            j = src.find('\n', i)
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
+        elif c == '/' and i + 1 < n and src[i + 1] == '*':
+            j = src.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            blank(i, j)
+            i = j
+        elif c in ('"', "'", '`'):
+            j = i + 1
+            while j < n:
+                if src[j] == '\\':
+                    j += 2
+                    continue
+                if src[j] == c:
+                    j += 1
                     break
-            j += 1
+                j += 1
+            blank(i + 1, j - 1)
+            prev_sig = c
+            i = j
+        elif c == '/':
+            # 正则字面量：仅当上一有意义字符不能构成表达式结尾时
+            if prev_sig and prev_sig in '=([{,;:&|!?+-*%<>~^' or prev_sig == '':
+                j = i + 1
+                in_cls = False
+                while j < n:
+                    if src[j] == '\\':
+                        j += 2
+                        continue
+                    if src[j] == '\n':
+                        break
+                    if src[j] == '[':
+                        in_cls = True
+                    elif src[j] == ']':
+                        in_cls = False
+                    elif src[j] == '/' and not in_cls:
+                        break
+                    j += 1
+                if j < n and src[j] == '/' and not in_cls:
+                    blank(i + 1, j)
+                    prev_sig = '/'
+                    i = j + 1
+                    continue
+            prev_sig = c
+            i += 1
+        else:
+            if not c.isspace():
+                prev_sig = c
+            i += 1
+    return ''.join(out)
+
+
+def _match_brace(stripped: str, open_idx: int) -> int:
+    """从 '{' 起做配对，返回右括号位置；找不到返回 -1（在剥离后的文本上跑）。"""
+    depth = 0
+    for k in range(open_idx, len(stripped)):
+        ch = stripped[k]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return k
+    return -1
+
+
+def _cap_extract_bodies(src: str) -> dict[str, str]:
+    """提取所有 renderer 形态的函数体：function NAME(...){...} 与 NAME = (...)=>{...} /
+    NAME = function(...){...}。返回 {名字: 体}，名字以 ^ 开头的是匿名赋值形态（仅用于计时检查）。"""
+    stripped = _js_strip(src)
+    bodies: dict[str, str] = {}
+    for m in re.finditer(r"function\s+(\w+)\s*\([^)]*\)\s*\{", stripped):
+        end = _match_brace(stripped, m.end() - 1)
+        if end > 0:
+            bodies[m.group(1)] = src[m.end() : end]
+    for m in re.finditer(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>|(\w+)\s*=>)\s*\{", stripped):
+        if m.group(1).upper() == 'RENDER':
+            continue
+        end = _match_brace(stripped, m.end() - 1)
+        if end > 0:
+            bodies[m.group(1)] = src[m.end() : end]
     return bodies
 
 
@@ -125,12 +210,57 @@ def _finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
-def _render_map(src: str) -> dict[str, str]:
-    """读取模板约定的 RENDER = {sceneId: renderFn} 映射。"""
-    m = re.search(r"(?:var|let|const)\s+RENDER\s*=\s*\{(.*?)\}\s*;", src, re.S)
+def _render_map(src: str) -> tuple[dict[str, str], dict[str, str]]:
+    """读取模板约定的 RENDER = {sceneId: renderer} 映射。
+
+    在剥离字符串/注释后的文本上做括号配对，返回两样东西：
+    - mapping：{sceneId: 具名 renderer 函数名}（匿名内联 renderer 不在其中）
+    - inline_bodies：{sceneId#inline: 匿名内联 renderer 的函数体}
+    匿名 `key: function(step){…}` / `key: (step)=>{…}` 同样能被拿到，
+    不再只认具名 render\\w+。
+    """
+    stripped = _js_strip(src)
+    m = re.search(r"\bRENDER\s*=\s*\{", stripped)
     if not m:
-        return {}
-    return {k: v for k, v in re.findall(r"[\"']([^\"']+)[\"']\s*:\s*(render\w+|function\s*\()", m.group(1))}
+        return {}, {}
+    brace = stripped.index('{', m.start())
+    end = _match_brace(stripped, brace)
+    if end < 0:
+        return {}, {}
+    lit_s = stripped[brace:end + 1]
+    lit_r = src[brace:end + 1]
+    mapping: dict[str, str] = {}
+    inline_bodies: dict[str, str] = {}
+    # 注意：剥离后引号内容变空格（键文案丢失但偏移保持），quoted 键要从原文同区间取。
+    # 手动推进扫描位置：抓到一段内联体后直接跳过它，渲染函数体内部的
+    # 对象字面量（`{n: function(){}}` 之类）才不会被误当成下一层 RENDER 键。
+    vm_re = re.compile(r"(?:(['\"])([^'\"]*)\1|([A-Za-z_$][\w$]*))\s*:\s*")
+    pos = 1
+    while pos < len(lit_s):
+        vm = vm_re.search(lit_s, pos)
+        if not vm:
+            break
+        if vm.group(1):
+            sid = lit_r[vm.start(2):vm.end(2)]
+        else:
+            sid = vm.group(3)
+        rest = lit_s[vm.end():]
+        fm = re.match(r"(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>|[\w$]+\s*=>)\s*\{", rest)
+        if fm:
+            close = _match_brace(lit_s, vm.end() + fm.end() - 1)
+            if close > 0:
+                inline_bodies[f"{sid}#inline"] = lit_r[vm.end() + fm.end(): close]
+                pos = close + 1
+            else:
+                pos = vm.end()
+            continue
+        nm = re.match(r"[\w$]+", rest)
+        if nm:
+            mapping[sid] = nm.group(0)
+            pos = vm.end() + nm.end()
+        else:
+            pos = vm.end()
+    return mapping, inline_bodies
 
 
 def _gate_scene_counts(src: str) -> dict[str, int]:
@@ -239,24 +369,29 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
             warnings.append(f'{sid}: 最后一句旁白结束点与 scene.end 相差较大')
 
     # 每个 scene 必须有 renderer；缺失时页面会出现“音频/字幕继续、画面静止”的真失败。
-    render_map = _render_map(src)
+    render_map, inline_bodies = _render_map(src)
     bodies = _cap_extract_bodies(src)
     for scene in scenes:
         sid = str(scene.get('step_id', '')).strip()
         fn = render_map.get(sid)
-        if not fn:
+        if not fn and f"{sid}#inline" not in inline_bodies:
             errors.append(f'{sid}: RENDER 中缺少对应 renderer')
-        elif fn != 'function(' and fn not in bodies:
+        elif fn and fn not in bodies:
             errors.append(f'{sid}: renderer {fn} 没有找到 function 实现')
 
     # renderer 计时纪律：句序号是唯一视觉时钟（stage.md 纪律 1）。
-    for name in sorted(bodies):
-        body = bodies[name]
-        sched = sorted(set(re.findall(r'\b(setTimeout|setInterval)\s*\(', body)))
+    # 检查对象 = RENDER 引用的具名函数 + 内联匿名体；在剥离字符串/注释后的文本上匹配，
+    # 不再全页面扫描（避免把 preGateOpen 这类页面函数误判成 renderer）。
+    for label in sorted(set(render_map.values()) | set(inline_bodies)):
+        body = bodies.get(label) or inline_bodies.get(label, '')
+        if not body:
+            continue
+        bs = _js_strip(body)
+        sched = sorted(set(re.findall(r'\b(setTimeout|setInterval)\s*\(', bs)))
         if sched:
-            errors.append(f'renderer {name} 用 {" / ".join(sched)} 排程后续视觉状态')
-        elif re.search(r'\brequestAnimationFrame\s*\(', body):
-            warnings.append(f'renderer {name} 使用 requestAnimationFrame：只允许一次性补间，不得推进句序号')
+            errors.append(f'renderer {label} 用 {" / ".join(sched)} 排程后续视觉状态')
+        elif re.search(r'\brequestAnimationFrame\s*\(', bs):
+            warnings.append(f'renderer {label} 使用 requestAnimationFrame：只允许一次性补间，不得推进句序号')
 
     # 一个 scene 最多挂一个 gate；当前 runtime 的 gate-host 是单槽位，不允许静默覆盖。
     gate_counts = _gate_scene_counts(src)
@@ -266,15 +401,12 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
             errors.append(f'{sid}: 同一 scene 配了 {count} 个 gate，但 runtime 只支持一个')
         if sid not in scene_set:
             errors.append(f'{sid}: GATES 引用了时间轴不存在的 scene')
+    if len(gate_counts) > 4:
+        warnings.append(f'页面配了 {len(gate_counts)} 道门禁；建议默认 1–2 道、长课最多 4 道')
 
     # Renderer literals vs sentence text: warning only.
-    # Template convention: function names usually contain the scene key elsewhere.
     for scene_id, _, sentence in all_sentences:
-        render_fn = None
-        mm = re.search(r'["\']' + re.escape(scene_id) + r'["\']\s*:\s*(render\w+)', src)
-        if mm:
-            render_fn = mm.group(1)
-        body = bodies.get(render_fn or '')
+        body = bodies.get(render_map.get(scene_id, '')) or inline_bodies.get(f"{scene_id}#inline")
         if not body:
             continue
         cap = _cap_norm(str(sentence.get('text', '')))
@@ -304,6 +436,15 @@ PROBE_STUB = r'''
   });
   HTMLMediaElement.prototype.play = function(){ return Promise.resolve(); };
   HTMLMediaElement.prototype.pause = function(){};
+  // 错误钩子必须早于页面任何脚本：加载期契约抛错也要被捕获。
+  window.__coursewareCheckErrors = [];
+  window.addEventListener('error', e => {
+    const msg = e && e.message ? e.message : (e && e.error ? String(e.error) : 'unknown');
+    window.__coursewareCheckErrors.push('JSERR ' + msg + ' @' + (e && e.filename || '') + ':' + (e && e.lineno || '?'));
+  });
+  window.addEventListener('unhandledrejection', e => {
+    window.__coursewareCheckErrors.push('UNHANDLED ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+  });
   try {
     Object.defineProperty(document, 'visibilityState', {configurable:true, get(){return 'visible';}});
     Object.defineProperty(document, 'hidden', {configurable:true, get(){return false;}});
@@ -328,11 +469,24 @@ PROBE_DRIVER = r'''
   const gateScenes = new Set(__GATE_SCENES_JSON__);
   const audio = q('#main-audio');
   const gate = q('#gate');
-  let prevErrorHandler = window.onerror;
-  window.onerror = (m,s,l,c) => { report.errors.push(`JSERR ${m} @${l}:${c}`); };
-  window.addEventListener('unhandledrejection', e => {
-    report.errors.push('UNHANDLED ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
-  });
+  const pregate = q('#pregate');
+
+  function captionShown(n){
+    if (!n) return false;
+    try {
+      // opacity/visibility 不沿 computed style 继承：字幕 <text> 自己算出来永远是 1，
+      // 上层 #cap 的淡出/隐藏只能沿祖先链逐级查。
+      for (let el = n; el; el = el.parentElement) {
+        if (el.hidden) return false;
+        const cs = getComputedStyle(el);
+        if (!cs) continue;
+        if (cs.display === 'none') return false;
+        if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+        if (Number(cs.opacity) < 0.05) return false;
+      }
+      return true;
+    } catch(e) { return true; }
+  }
 
   function fire(t){
     window.__coursewareCheckSetTime(t);
@@ -365,8 +519,19 @@ PROBE_DRIVER = r'''
     const a=item.getBoundingClientRect(), b=target.getBoundingClientRect();
     // 落在目标条目的下半部，触发 runtime 的“插到末尾”路径；落在正中会被
     // 解释成“插到目标前”，两项列表的顺序不会变化，产生假失败。
-    const sx=a.left+a.width/2, sy=a.top+a.height/2, ex=b.left+b.width/2,
-      ey=b.bottom-Math.min(1, b.height/4);
+    // 目标因容器滚动而部分不可见时把点钳回容器可视区，避免打空（A9）。
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const holder = target.parentElement;
+    let ex=clamp(b.left+b.width/2, window.innerWidth*0.02, window.innerWidth*0.98),
+        ey=clamp(b.bottom-Math.min(1, b.height/4), 0, window.innerHeight-1);
+    if(holder){
+      const hr=holder.getBoundingClientRect();
+      if(hr.width>0 && hr.height>0){
+        ex=clamp(ex, hr.left+2, hr.right-2);
+        ey=clamp(ey, hr.top+2, hr.bottom-2);
+      }
+    }
+    const sx=a.left+a.width/2, sy=a.top+a.height/2;
     if(window.PointerEvent){
       item.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:sx,clientY:sy,button:0,buttons:1,pointerId:23}));
       document.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,cancelable:true,clientX:ex,clientY:ey,button:0,buttons:1,pointerId:23}));
@@ -488,6 +653,10 @@ PROBE_DRIVER = r'''
       return;
     }
     const caption = q('#cap-text');
+    // 探针靠 dispatchEvent('timeupdate') 驱动时间轴，不走真实 play，页面会停在
+    // data-state="idle"；模板 CSS 在 idle 下强制 #cap 透明。先进入播放态，
+    // 否则下面的可见性断言会对任何模板恒误报。
+    const stage = q('#stage'); if (stage) stage.dataset.state = 'playing';
 
     // 先把所有门禁走完。这样后面的字幕逐句核对不会被门禁的 preGate 回退干扰。
     // candidates 标注该 scene 是否配了 gate：配了的要等 preGate 过渡结束再判断，
@@ -501,33 +670,40 @@ PROBE_DRIVER = r'''
       if(ns.length) candidates.push({time:Number(ns[ns.length-1].start) + Number(ns[ns.length-1].duration), hasGate:hasGate});
     });
     const seenGateScenes = new Set();
+    const revealedScenes = new Set();
+    const gateActive = () => gate && (!gate.hidden || (pregate && !pregate.hidden));
     if (gateScenes.size && !gate) report.failures.push('检测到 GATES 配置，但页面没有 #gate 浮层');
     if (gate){
       for(const cand of candidates){
         fire(cand.time);
         await sleep(30);
-        if (gate.hidden && cand.hasGate){
-          for(let i=0;i<42 && gate.hidden;i++) await sleep(60);   // 等 preGate（≤2.5s）
-        }
-        if (gate.hidden) continue;
+        // 活动驱动：gate 已开或 preGate 过渡中——即使静态解析没认出这个场景配了
+        // gate（GATES.push / 运行时拼装），也要等它开完并测试，堵住字面量依赖逃逸（A1）。
+        if (gate.hidden && !(cand.hasGate || gateActive())) continue;
+        for(let i=0;i<42 && gate.hidden;i++) await sleep(60);   // 等 preGate（≤2.5s）
+        if (gate.hidden) continue;   // 配了却没开：统一在循环后报
         const host = q('#gate-host');
         const sid = (host && host.dataset.stepId) || '';
+        revealedScenes.add(sid);
         if (seenGateScenes.has(sid)) continue;
         seenGateScenes.add(sid);
         const scene = scenes.find(x => String(x.step_id) === sid);
         const nlist = scene ? scene.runtime.narration || [] : [];
         let probeSentence = null;
-        for(const n of nlist){ if(cand.time >= Number(n.start) && cand.time < Number(n.start) + Number(n.duration)){ probeSentence = n; break; } }
+        for(const n of nlist){ if(cand.time >= Number(n.start) && cand.time <= Number(n.start) + Number(n.duration)){ probeSentence = n; break; } }
         await testGate(cand.time, probeSentence);
+        if (gateScenes.size && !gateScenes.has(sid)) report.warnings.push(`弹出的门禁场景 ${sid} 不在静态解析的 GATES 里，请核对门禁配置`);
         const go = q('#gate-go'); if(go && !go.disabled) go.click();
         await sleep(260);
       }
       for(const sid of gateScenes){
-        if(!seenGateScenes.has(sid)) report.failures.push(`GATES 配置了 ${sid}，但门禁从未弹出`);
+        if(!revealedScenes.has(sid)) report.failures.push(`GATES 配置了 ${sid}，但门禁从未弹出`);
       }
     }
 
-    // 字幕核对：每句取中点，要求画布字幕逐字等于时间轴原文。
+    // 字幕核对：每句取中点，要求画布字幕逐字等于时间轴原文，且真的可见。
+    // 扫描途中若有门禁在句中点位打开（锚点没落在句子边界上），单独报出（A4）。
+    const sweepGateReported = new Set();
     for(const scene of scenes){
       const ns = scene.runtime && scene.runtime.narration || [];
       for(let i=0;i<ns.length;i++){
@@ -535,9 +711,23 @@ PROBE_DRIVER = r'''
         const mid = n.start + Math.min(Math.max(n.duration * 0.5, 0.05), Math.max(n.duration - 0.05, 0.05));
         fire(mid);
         await sleep(0);
+        if (gateActive()){
+          const key = String(scene.step_id);
+          if(!sweepGateReported.has(key)){
+            report.failures.push(`门禁在句中标位置打开：${key} t=${mid.toFixed(2)}`);
+            sweepGateReported.add(key);
+          }
+          const go = q('#gate-go'); if(go && !go.disabled) go.click();
+          await sleep(260);
+        }
         const got = (caption.textContent || '').trim();
         if(got !== String(n.text || '').trim()){
           report.failures.push(`字幕不一致：${scene.step_id}#${i} 期望“${n.text}” 实际“${got}”`);
+        } else if(!captionShown(caption)){
+          // 淡入过渡（模板 .38s）可能还没走完，等它结束再判不可见，避免假失败。
+          await sleep(420);
+          if(!captionShown(caption))
+            report.failures.push(`字幕文字一致但不可见：${scene.step_id}#${i}`);
         }
         report.captionChecks += 1;
       }
@@ -564,12 +754,15 @@ PROBE_DRIVER = r'''
       }
     }
 
+    // 加载期（探针挂上之前）抛出的错误由 PROBE_STUB 记录，在这里并入报告。
+    report.errors = report.errors.concat(window.__coursewareCheckErrors || []);
     report.ok = report.errors.length===0 && report.failures.length===0;
     out.textContent = JSON.stringify(report);
     document.title = `courseware-check ${report.ok ? 'PASS' : 'FAIL'}`;
   }
   run().catch(e => {
     report.errors.push('probe exception: ' + (e && e.stack ? e.stack : String(e)));
+    report.errors = report.errors.concat(window.__coursewareCheckErrors || []);
     report.ok = false;
     out.textContent = JSON.stringify(report);
     document.title = 'courseware-check FAIL';
@@ -614,6 +807,23 @@ def _build_probe(page: Path, out: Path, runtime_src: Path) -> None:
     src = _read(page)
     if 'id="lesson-timeline"' not in src:
         raise SystemExit('[error] 找不到 #lesson-timeline')
+    # 门禁统计取"作者写下的页面"：inline 进来的 runtime 自带 GATES/scene 字样的
+    # 注释与标识符，在它之上做字面量正则会污染计数（A6）。
+    gate_scenes_json = json.dumps(sorted(_gate_scene_counts(src)), ensure_ascii=False)
+    # 错误钩子必须早于页面任何脚本：紧跟 <head> 插入；没有 <head> 时退到首个
+    # <script> 之前，再退到 timeline 锚点（现状）。
+    head = re.search(r'<head\b[^>]*>', src, re.I)
+    first_script = re.search(r'<script\b', src, re.I)
+    if head:
+        i = head.end()
+    elif first_script:
+        i = first_script.start()
+    else:
+        i = -1
+    if i >= 0:
+        src = src[:i] + '\n' + PROBE_STUB + src[i:]
+    else:
+        src = re.sub(r'(<script\b[^>]*\bid=["\']lesson-timeline["\'][^>]*>)', PROBE_STUB + r'\n\1', src, count=1, flags=re.I)
     runtime_ref = re.search(r'<script\b[^>]*src=["\']([^"\']*interactive_runtime\.js)["\'][^>]*></script>', src, re.I)
     if runtime_ref:
         rel = runtime_ref.group(1)
@@ -624,10 +834,7 @@ def _build_probe(page: Path, out: Path, runtime_src: Path) -> None:
         tag = runtime_ref.group(0)
         # probe 永远 inline 页面实际使用的 runtime，避免临时目录改变相对 src 后悄悄变成 404。
         src = src.replace(tag, '<script>\n' + runtime + '\n</script>', 1)
-    src = re.sub(r'(<script\b[^>]*\bid=["\']lesson-timeline["\'][^>]*>)', PROBE_STUB + r'\n\1', src, count=1, flags=re.I)
-    driver = PROBE_DRIVER.replace(
-        '__GATE_SCENES_JSON__',
-        json.dumps(sorted(_gate_scene_counts(src)), ensure_ascii=False))
+    driver = PROBE_DRIVER.replace('__GATE_SCENES_JSON__', gate_scenes_json)
     if '</body>' in src:
         src = src.replace('</body>', driver + '</body>', 1)
     else:
@@ -682,12 +889,17 @@ def _browser_preflight(chrome: str) -> bool:
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
-def browser_check(page: Path, runtime_src: Path, keep: bool = False) -> dict[str, Any] | None:
+def browser_check(page: Path, runtime_src: Path, keep: bool = False,
+                  scene_count: int = 0) -> dict[str, Any] | None:
     chrome = _find_chrome()
     if not chrome:
         return None
     if not _browser_preflight(chrome):
         return None
+    # 虚拟时间预算要覆盖全部探针等待（门禁 preGate、逐句字幕、换场空档）：
+    # 固定 40s 对短课够用，长课会烧光预算——报告停在 "running"，被当成
+    # "没有返回检查报告"的假故障。按场景数扩容（A8）。
+    budget = max(40000, scene_count * 4500 + 20000)
     temp_root = Path(tempfile.mkdtemp(prefix='courseware-check-'))
     probe = temp_root / 'probe.html'
     dom = temp_root / 'dom.html'
@@ -705,11 +917,11 @@ def browser_check(page: Path, runtime_src: Path, keep: bool = False) -> dict[str
         '--no-default-browser-check', '--disable-dev-shm-usage', '--allow-file-access-from-files',
         '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding', f'--user-data-dir={profile}',
-        '--run-all-compositor-stages-before-draw', '--virtual-time-budget=40000', '--dump-dom',
+        '--run-all-compositor-stages-before-draw', f'--virtual-time-budget={budget}', '--dump-dom',
         'file:///' + str(probe).replace('\\', '/'),
     ]
     try:
-        rc = _run_chrome(cmd, dom, log, timeout=60)
+        rc = _run_chrome(cmd, dom, log, timeout=max(60, budget // 1000))
         raw = dom.read_text(encoding='utf-8', errors='replace') if dom.exists() else ''
         m = re.search(r'<pre id="courseware-check-report">(.*?)</pre>', raw, re.S)
         if not m:
@@ -723,7 +935,7 @@ def browser_check(page: Path, runtime_src: Path, keep: bool = False) -> dict[str
         report.setdefault('browser_rc', rc)
         return report
     except subprocess.TimeoutExpired:
-        return {"ok": False, "errors": ["浏览器冒烟检查超过 60s，已中止"], "failures": [], "warnings": [], "stats": {}}
+        return {"ok": False, "errors": [f"浏览器冒烟检查超过 {max(60, budget // 1000)}s，已中止"], "failures": [], "warnings": [], "stats": {}}
     finally:
         if not keep:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -775,7 +987,8 @@ def main() -> int:
         return 0
 
     runtime_src = Path(__file__).with_name('interactive_runtime.js')
-    report = browser_check(page, runtime_src, keep=args.keep)
+    report = browser_check(page, runtime_src, keep=args.keep,
+                           scene_count=static['stats'].get('scenes', 0))
     if report is None:
         print('[note] 浏览器冒烟未执行：未找到可用 Chrome/Edge，或 headless 预检未通过。静态检查已通过。')
         return 1 if args.require_browser else 0

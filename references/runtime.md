@@ -136,3 +136,20 @@ tick
 ```
 
 runtime 不应重新实现其中任何一层。
+
+## 7. QA 契约（`check_gates.py` 浏览器冒烟依赖）
+
+探针不驱动真实播放，而是桩掉 `currentTime` 后 dispatch `timeupdate`，因此页面必须给 QA 留下这些稳定的观察点：
+
+| 钩子 | 用途 |
+|---|---|
+| `#main-audio` | 唯一时钟源；`timeupdate` 驱动 `tick()` |
+| `#lesson-timeline`（`<script type="application/json">`） | 逐句字幕与场景区间的比对基准 |
+| `#cap-text[data-courseware-caption]` | 字幕正文节点；QA 读它的 `textContent` 与祖先链可见性 |
+| `#gate` | 门禁浮层容器（`hidden` 属性 = 开关） |
+| `#gate-host`（`dataset.stepId`） | 当前门禁归属的场景 id，QA 用它对上时间轴 |
+| `#gate-next` | 答对后出现的「继续」按钮 |
+| `#gate-go` | 放行按钮，QA 用它关闭门禁 |
+| `#pregate` | preGate 过渡层；QA 视「gate 或 pregate 任一未 hidden」为门禁活动中，据此等待过渡结束 |
+
+改动这些 id 或语义等于改 QA 契约：探针会把「配了门禁却从未弹出」「门禁在句中标位置打开」等判为失败。静态侧还要求 `RENDER = {sceneId: renderer}` 与 `var GATES = [{scene:'…'}]` 保持可解析的字面量形态（推送式拼装逃得过静态解析，但逃不过上面的活动驱动检测）。

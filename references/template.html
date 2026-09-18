@@ -1040,6 +1040,9 @@
     c.hidden = false;
     ['locked','completed','selected'].forEach(function(k){ delete c.dataset[k]; });
     BUILD[t](g, c);
+    // 动态块必须重新接线。**接在揭开浮层之前**：契约抛错时浮层还挂着 hidden，
+    // 学习者不会看到一张永远点不动的半开门禁；错误本身交给 QA/控制台暴露。
+    if (window.coursewareStudioWire) window.coursewareStudioWire();
     // 上一题答对时运行时禁用了卡里所有按钮；重开要放回来（否则这一次点不动）
     Array.prototype.forEach.call(c.querySelectorAll('button'), function(b){ b.disabled = false; });
     gateGo.textContent = '答对后继续'; gateGo.disabled = true;
@@ -1048,7 +1051,6 @@
     // 冻结（暂停 + 回退；at:'end' 不回退）交给 preGateOpen，再揭开卡片。
     preGateOpen(i, function(){
       gateEl.hidden = false;
-      if (window.coursewareStudioWire) window.coursewareStudioWire();   // 动态块必须重新接线
       el('rack').dataset.gated = '1';              // 播放器行变灰且不可点，见 CSS ④b
     });
   }

@@ -60,9 +60,13 @@ audio/narration_timing.json
 
 常用开关：`--dry-run`、`--resume`、`--speed`、段级 `speed` / `voice_id` / `voice_style`、`--on-fail silence`。
 
+语速优先级：`segments[].speed` > 全局 `--speed`；`opening_speed` / `closing_speed`（顶层键）单独覆盖开场与收尾，缺省时它们**跟随全局 `--speed`**（不钉死 1.0）。要"开场略慢"就写一个小于当前语速的值。
+
+`--resume` 的缓存按"文本 + 音色 + 风格 + 模型 + 语速"指纹判定，改任何一项只有受影响的句子重烧。`--on-fail silence` 留下的失败静音占位带 `.failed` 标记；**下次 `--resume` 在默认 `--on-fail abort` 下会拒绝带着占位直接交付**（提示你删标记重试或显式改 `--on-fail silence`）。TTS 失败且连静音占位也没落成的句子会被整句丢弃，时间轴 `status` 记为 `degraded`（`degraded.dropped_sentence_count`）。
+
 `--bgm` 一旦指定就必须指向存在的文件；找不到会直接失败，避免最终成品静默缺少用户要求的背景音乐。
 
-改了语速就必须重新生成音频与时间轴。
+改了语速就必须重新生成音频与时间轴（指纹含语速，`--resume` 会自动重烧受影响的句子）。
 
 ## 4. 时间轴
 
@@ -85,11 +89,16 @@ python scripts/build_timeline.py \
 
 ## 5. TTS 配置
 
-默认用户级配置：
+密钥解析优先级：CLI 参数 > 系统环境变量 > 项目级 `.env` > 用户级 `.env`：
 
 ```text
 ~/.config/courseware-studio/.env
 ```
+
+项目级 `.env` 从讲稿/输出所在目录向上找，**越过带 `.git` 的项目根就停**——不会把
+磁盘上层或别人目录里的 `.env` 吸进来。`.env` 值支持成对引号与行内注释：
+`KEY=sk-xxx # 备注` 取 `sk-xxx`，`KEY="sk-a#b"` 里的 `#` 是值的一部分；
+不带引号时，只有"空白 + `#`"才起注释作用。
 
 也可直接使用环境变量或 CLI 参数。不要读取其它 skill 的私有配置目录。
 

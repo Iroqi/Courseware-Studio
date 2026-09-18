@@ -13,6 +13,9 @@
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _script_utils import strip_env_comment  # noqa: E402
+
 
 # 用户级 .env 路径
 _USER_ENV_PATH = os.path.join(os.path.expanduser("~"), ".config", "courseware-studio", ".env")
@@ -52,6 +55,10 @@ def _candidate_project_envs(project_dir=None, source_path=None):
         cur = root
         while True:
             add(cur)
+            # 项目根边界：cur 里有 .git（目录，或 worktree/submodule 的 gitfile）
+            # 就是项目根，继续向上会把无关目录的 .env 吸进来（盘根/家目录都拦不住）。
+            if os.path.exists(os.path.join(cur, ".git")):
+                break
             parent = os.path.dirname(cur)
             if parent == cur:
                 break
@@ -134,11 +141,10 @@ def _parse_env_file_raw(path):
             if k.startswith("export "):
                 k = k[len("export "):].strip()
             v = v.strip()
-            # 剥离值两端成对的引号（"sk-xxx" / 'sk-xxx'）：
-            # 很多 .env 模板带引号，原样读入会把引号一起带给
-            # OpenAI SDK，得到 401 且报错不指向真正原因
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("\"", "'"):
-                v = v[1:-1]
+            # 引号感知地剥行内注释与成对引号（"sk-xxx" / sk-xxx # 注释）：
+            # 原样读入会把引号或注释一起带给 OpenAI SDK，得到 401 且
+            # 报错不指向真正原因。规则见 _script_utils.strip_env_comment。
+            v = strip_env_comment(v)
             if k:
                 result[k] = v
     return result

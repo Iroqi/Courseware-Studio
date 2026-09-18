@@ -28,7 +28,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _script_utils import setup_stdio  # noqa: E402
+from _script_utils import setup_stdio, guard_not_in_skill_dir  # noqa: E402
 from _contracts import require_finite_number  # noqa: E402
 
 
@@ -198,6 +198,12 @@ def main():
                    help="只输出裸 JSON，不套 <script> 标签")
     args = p.parse_args()
     setup_stdio()   # Windows 重定向下 stdout 非 UTF-8：下面要打中文章节标题
+    # 产物守卫：-o 是相对 CWD 解析的，从技能目录照抄示例命令会把时间轴块
+    # 直接写进技能仓库（其余写盘入口都有同一道拦截）。
+    if args.output:
+        guard_not_in_skill_dir(("-o/--output", os.path.abspath(args.output)),
+                               tip="请用 -o/--output 指定技能目录之外的绝对路径，"
+                                   "或去掉 -o 直接把结果打到 stdout。")
 
     timing = _load(args.timing, "时间轴")
     source = _load(args.source, "旁白脚本") if args.source else None

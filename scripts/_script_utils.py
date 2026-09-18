@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 # 技能目录（scripts/ 的上一级）：制作产物一律不得落在这里——产物写在用户项目
 # 目录，混进技能目录会污染仓库、多次制作串台。放在共享模块是因为各入口都要拦
@@ -25,7 +26,11 @@ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _atomic_replace(path, write_fn):
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
-    tmp = str(path) + ".tmp"
+    # mkstemp 生成唯一临时名：两个进程先后写同一路径时不会共用（并踩坏）
+    # 同一个 <path>.tmp。
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".",
+                               suffix=".tmp", dir=directory)
+    os.close(fd)
     try:
         write_fn(tmp)
         os.replace(tmp, path)
@@ -90,6 +95,37 @@ def guard_not_in_skill_dir(*labeled_paths, **kw):
     raise SystemExit(
         f"[guard] 制作产物不能写在技能目录内（{SKILL_DIR}）：\n{lines}\n"
         f"产物混进技能目录会污染技能仓库，也容易在多次制作之间串台。\n{tip}")
+
+
+def strip_env_comment(value):
+    """剥掉 .env 值里的行内注释与成对引号（引号感知，_env 解析层唯一实现）。
+
+    规则（对齐 dotenv 的常见行为）：
+      · 值以引号开头：取到配对的闭合引号为止——"sk-a#b" 里的 # 是值的一部分，
+        闭合引号之后的任意内容按注释丢弃；没有闭合引号时保守地保留引号后的
+        全部正文（宁可把注释当值，也不要把密钥截断一半）。
+      · 值不带引号：首个"空白 + #"（或值直接以 # 开头）处截断；
+        紧贴的非空白 #（如锚点、abc#def）视为值的一部分。
+    """
+    s = value
+    if s[:1] in ('"', "'"):
+        q = s[0]
+        i = 1
+        while i < len(s):
+            if s[i] == "\\":
+                i += 2
+                continue
+            if s[i] == q:
+                return s[1:i]
+            i += 1
+        return s[1:]
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "#" and (i == 0 or s[i - 1].isspace()):
+            break
+        i += 1
+    return s[:i].rstrip()
 
 
 # 中文终止符：。！？＋中文分号＋ASCII 分号＋换行（保持稳定的断句行为）。

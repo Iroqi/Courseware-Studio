@@ -107,6 +107,11 @@ def _collect_dialogue_sentences(dialogue, speakers, seg_index, seg_title):
 def _collect_blocks(source, default_speed=None):
     """把结构化 source 组装成 Block 列表（opening / segments / closing）。"""
     blocks: List[Block] = []
+    # opening/closing 不传显式覆盖时跟随全局 --speed（build_parts 传进来的
+    # default_speed），而不是钉死 1.0：整稿调语速时开场/收尾不该掉队。
+    # OPENING_CLOSING_DEFAULT_SPEED 只在没有任何全局语速时兜底。
+    oc_fallback = (default_speed if default_speed is not None
+                   else OPENING_CLOSING_DEFAULT_SPEED)
 
     def _extra(seg, fallback_speed):
         extra = {}
@@ -125,7 +130,7 @@ def _collect_blocks(source, default_speed=None):
             title=source.get("opening_title") or source.get("title") or "本期内容",
             tagline=(source.get("opening_tagline") or "").strip(),
             sentences=split_sentences(opening_text),
-            extra={"speed": source.get("opening_speed", OPENING_CLOSING_DEFAULT_SPEED)},
+            extra={"speed": source.get("opening_speed", oc_fallback)},
         ))
 
     raw_segments = source.get("segments", [])
@@ -163,7 +168,7 @@ def _collect_blocks(source, default_speed=None):
             title=source.get("closing_title") or "小结",
             tagline=(source.get("closing_tagline") or "").strip(),
             sentences=split_sentences(closing_text),
-            extra={"speed": source.get("closing_speed", OPENING_CLOSING_DEFAULT_SPEED)},
+            extra={"speed": source.get("closing_speed", oc_fallback)},
         ))
     return blocks
 
@@ -288,12 +293,14 @@ def synth_sentence(client, text, voice_id, voice_style, out_path,
     else:
         return False, False
 
+    # speed≈1 时根本不需要 atempo，音频就是所请求的语速：先判这条，
+    # 否则"ffmpeg 缺失 + 原速"会被记成变速未落上，指纹永远不写、每轮白重烧。
+    if abs(speed - 1.0) <= 0.01:
+        return True, True
     if not ffmpeg_path:
         print(f"    [{sentence_label or text[:30] + '...'}][speed-skip] "
               f"ffmpeg 不可用，跳过变速（音频保持原速）", file=sys.stderr, flush=True)
         return True, False
-    if abs(speed - 1.0) <= 0.01:
-        return True, True
     # 变速失败保留原速音频即可（时长由实测决定，时间轴仍然准确）；重调 TTS 只会白烧额度。
     try:
         return True, apply_speed(ffmpeg_path, out_path, speed)
@@ -333,10 +340,20 @@ def _resume_decision(out_path, ffmpeg_path, text, voice_id, voice_style, model, 
     """--resume 时判断某句能不能跳过。返回 (action, duration)。
 
         "skip"        缓存可用（输入指纹一致且时长有效）
-        "skip_failed" 上次已判定 TTS 失败并降级为静音——不再重试
+        "skip_failed" 上次已判定 TTS 失败并降级为静音——输入指纹未变则不再重试
         "regen"       没缓存 / 指纹不符 / 时长无效 → 重新合成
     """
     if os.path.exists(out_path + ".failed"):
+        # 失败占位也要核对指纹：改了这句文案/音色/语速后，旧的"失败"结论
+        # 对新输入不成立，必须 regen 重试，而不是永远 skip_failed 锁死静音。
+        try:
+            with open(out_path + ".sha", encoding="utf-8") as f:
+                cached_failed_sha = f.read().strip()
+        except (OSError, UnicodeDecodeError):
+            cached_failed_sha = ""
+        if cached_failed_sha != _sentence_hash(text, voice_id, voice_style,
+                                               model, speed):
+            return "regen", 0.0
         dur = measure_duration(ffmpeg_path, out_path) if ffmpeg_path else 0.0
         return ("skip_failed", dur) if dur and dur > 0 else ("regen", 0.0)
 
@@ -428,8 +445,8 @@ def _load_script_source(path):
     """读取旁白脚本 JSON，规整成内部结构。
 
     唯一格式：`{title, segments:[{id,title,text,...}]}`，可选顶层 opening/closing/
-    opening_title/closing_title/opening_tagline/closing_tagline/speakers。
-    不做隐式兼容——格式不对就报错，不猜。
+    opening_title/closing_title/opening_tagline/closing_tagline/opening_speed/
+    closing_speed/speakers。不做隐式兼容——格式不对就报错，不猜。
     """
     import json
 
@@ -472,7 +489,8 @@ def _load_script_source(path):
     result = {"title": data.get("title") or data.get("opening_title") or "",
               "segments": segs}
     for k in ("opening", "closing", "opening_title", "closing_title",
-              "opening_tagline", "closing_tagline", "speakers"):
+              "opening_tagline", "closing_tagline",
+              "opening_speed", "closing_speed", "speakers"):
         if data.get(k) is not None:
             result[k] = data[k]
     return result
@@ -598,9 +616,12 @@ def _finalize_audio(args, ffmpeg_path, sentence_data, source_data, seg_config,
             "sentences": seg_sentences,
         })
 
+    # 整句丢弃（TTS 失败且静音兜底也没落成）同样是降级：这几句在成片里既没
+    # 配音也没字幕，status 不能因为"没有占位"就报 ok。
+    dropped_count = max(0, total_sentences - len(sentence_data))
     timing = {
         "schema_version": 1,
-        "status": "degraded" if silence_fallback_count else "ok",
+        "status": "degraded" if (silence_fallback_count or dropped_count) else "ok",
         "title": source_data.get("title") or "",
         "total_duration": round(total_dur, 3),
         "gap": args.gap,
@@ -608,7 +629,8 @@ def _finalize_audio(args, ffmpeg_path, sentence_data, source_data, seg_config,
         # 只保留文件名：消费方按约定在同一目录下查找。
         "audio": _audio_ref(combined_path),
         "scenes": scenes,
-        "degraded": {"tts_silence_fallback_count": silence_fallback_count},
+        "degraded": {"tts_silence_fallback_count": silence_fallback_count,
+                     "dropped_sentence_count": dropped_count},
     }
     # 原子写：narration_timing.json 是页面内联时间轴的唯一数据源，写到一半被
     # Ctrl-C 打断会留下截断 JSON——要么完整要么不存在。
@@ -699,11 +721,16 @@ def _synthesize_pending(args, client, ffmpeg_path, model, pending_tasks,
                     # 被打断时，宁可留下"没指纹"（下轮重新合成），也不要留下
                     # "有指纹 + 有失败标记"。
                     _remove_quiet(out_path + ".failed")
-                    # 指纹 sidecar：resume 时用它判断这句是不是同一份输入。
-                    _write_sidecar(out_path + ".sha", _sentence_hash(
-                        task["text_tts"], task["voice_id"], task["voice_style"],
-                        model, task["speed"]))
-                    if not speed_applied:
+                    if speed_applied:
+                        # 指纹 sidecar：resume 时用它判断这句是不是同一份输入。
+                        _write_sidecar(out_path + ".sha", _sentence_hash(
+                            task["text_tts"], task["voice_id"], task["voice_style"],
+                            model, task["speed"]))
+                    else:
+                        # atempo 没落上：文件是原速音频，绝不能留请求语速的指纹——
+                        # 下轮 --resume 会按指纹 skip，错误语速永久投毒缓存。
+                        # 删掉指纹，让它每轮都重合成直到变速成功。
+                        _remove_quiet(out_path + ".sha")
                         print(f"    [{label}][warn] 该句仍为原速（atempo 未落上），"
                               f"下次 --resume 会重试", file=sys.stderr)
                     new_results.append(_make_sentence_entry(
@@ -826,6 +853,7 @@ def main():
                               sentence_voices, sentence_speaker_labels)
 
     sentence_data, pending_tasks, cached_count = [], [], 0
+    cached_failed_labels = []
     for i, sent_text in enumerate(sentences):
         out_path = os.path.join(sentences_dir, f"s{i+1:03d}.wav")
         task = {"index": i, "text_tts": sent_text, "out_path": out_path,
@@ -838,6 +866,12 @@ def main():
             action, dur = _resume_decision(out_path, ffmpeg_path, sent_text,
                                            task["voice_id"], task["voice_style"],
                                            model, task["speed"])
+            if action == "skip_failed" and args.on_fail == "abort":
+                # abort 模式的契约是"交付里没有静音占位"。缓存里的失败标记
+                # 若不拦下，--resume 会带着占位一路跑到 exit 0。在这里攒名单，
+                # 循环后立刻退出——在任何一次 TTS 调用之前，不白烧额度。
+                cached_failed_labels.append(task["label"])
+                continue
             if action != "regen":
                 sentence_data.append(_make_sentence_entry(
                     task, dur, sentence_speaker_labels,
@@ -849,6 +883,13 @@ def main():
             _drop_sentence_cache(out_path)
 
         pending_tasks.append(task)
+
+    if cached_failed_labels:
+        print(f"\n[error] --resume 命中 {len(cached_failed_labels)} 个「失败静音占位」句："
+              f"{', '.join(cached_failed_labels)}；--on-fail abort（默认）不接受无声占位。"
+              "删掉缓存目录里这些句的 .failed 标记后重跑（将重试这几句 TTS），"
+              "或显式改用 --on-fail silence 保留占位。", file=sys.stderr, flush=True)
+        sys.exit(1)
 
     pending_count = len(pending_tasks)
     if pending_count:
@@ -873,7 +914,10 @@ def main():
               file=sys.stderr, flush=True)
         sys.exit(1)
     if failed:
-        print(f"\n[warn] {len(failed)} 句失败，已按静音占位处理：{[f + 1 for f in failed]}",
+        # 走到这里说明 --on-fail silence 下连静音兜底也失败了：这些句**不在**
+        # 时间轴上（不是占位），文案会整句消失，必须显式报出。
+        print(f"\n[warn] {len(failed)} 句 TTS 失败且静音占位也没落成，已从时间轴整句丢弃："
+              f"{[f + 1 for f in failed]}（成片这几处无配音也无字幕，交付时间轴为 degraded）",
               flush=True)
 
     silence_fallback_count = sum(1 for s in sentence_data if s.get("synth_failed"))
