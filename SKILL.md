@@ -3,7 +3,7 @@ name: courseware-studio
 description: >
   把讲稿或已有旁白做成一页会讲话的课件：单页 HTML、音频、逐句时间轴、画布内字幕、可选认知门禁。
   适合把一段已经想清楚的内容讲透；不负责掌握度、学习进度或复习系统。
-version: 1.6.2
+version: 1.6.3
 agent_created: true
 ---
 
@@ -131,7 +131,13 @@ renderer 只回答：**当前句序号下，画布长什么样。**
 - 自己维护字幕；
 - 再造另一套时间判断。
 
-详见 `references/stage.md`。
+### emoji 是默认装饰层
+
+画面图元与侧栏**默认配一个贴切的 emoji 锚点**（📤 推送事件、🧩 复用、🖥️ 执行机、⏳ 等待、🚀 发布……），每个概念记号至多一个。这是默认动作，不等用户开口要。
+
+三条禁区：旁白 `text` / 字幕（禁，TTS 会念、破坏字幕唯一来源）；门禁题面与反馈（禁，保持纯文字）；emoji 不驱动状态、不进 renderer 时间步。
+
+其余渲染纪律详见 `references/stage.md`。
 
 ## 6. 门禁设计
 
@@ -236,6 +242,7 @@ python scripts/check_gates.py <页面目录或 index.html> --require-browser  # 
 - [ ] 场景空档保留上一句字幕（不清空、不闪白）；
 - [ ] renderer 不用 `setTimeout` / `setInterval` 自带计时（一次性 rAF 补间除外）；
 - [ ] 场景步数与旁白句数对得上；
+- [ ] 画面图元 / 侧栏默认配了贴切的 emoji 锚点（旁白、字幕、门禁题面一律不放）；
 - [ ] 门禁只在场景开头或 `at:'end'` 开；
 - [ ] 对答才产生 `data-locked="1"`；
 - [ ] 动态交互建成后调用 `window.coursewareStudioWire()`，且调用点在揭开门禁浮层**之前**（契约抛错不能留下半开的门禁）；
