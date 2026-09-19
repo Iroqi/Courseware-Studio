@@ -29,8 +29,11 @@ def _candidate_project_envs(project_dir=None, source_path=None):
 
     优先级：
       1. project_dir/.env（Create 明确传入的项目目录）
-      2. source_path 所在目录及其父级目录直到当前工作目录边界
+      2. source_path 所在目录向上，到当前工作目录边界即停（不越过 cwd）
       3. 当前工作目录/.env
+
+    向上爬升的停止边界：命中带 .git 的项目根、到达 cwd、到达家目录、
+    或触到盘根——盘根本身不作为候选，避免把 C:\\.env 吸进密钥解析。
 
     仅读取文件，不把 .env 复制进 Artifact。
     """
@@ -49,27 +52,22 @@ def _candidate_project_envs(project_dir=None, source_path=None):
         roots.append(os.path.abspath(project_dir))
     if source_path:
         roots.append(os.path.dirname(os.path.abspath(source_path)))
-    roots.append(os.getcwd())
+    roots.append(os.path.abspath(os.getcwd()))
 
+    cwd_abs = os.path.abspath(os.getcwd())
+    home = os.path.expanduser("~")
     for root in roots:
         cur = root
         while True:
-            add(cur)
-            # 项目根边界：cur 里有 .git（目录，或 worktree/submodule 的 gitfile）
-            # 就是项目根，继续向上会把无关目录的 .env 吸进来（盘根/家目录都拦不住）。
-            if os.path.exists(os.path.join(cur, ".git")):
-                break
-            parent = os.path.dirname(cur)
-            if parent == cur:
-                break
-            # 不无限向上吸收用户家目录之外的无关 .env；到 cwd/home 即停止。
-            if parent == os.path.dirname(os.path.abspath(os.getcwd())) and root != os.getcwd():
-                add(parent)
-                break
-            cur = parent
-            if cur == os.path.expanduser("~"):
+            at_drive_root = os.path.dirname(cur) == cur
+            if not at_drive_root:
                 add(cur)
+            # 命中 .git 项目根、走到 cwd/home、或触到盘根即停：
+            # 不再向上把无关祖先目录（尤其 cwd 的父级）的 .env 吸进来。
+            if (at_drive_root or cur == cwd_abs or cur == home
+                    or os.path.exists(os.path.join(cur, ".git"))):
                 break
+            cur = os.path.dirname(cur)
 
     return candidates
 

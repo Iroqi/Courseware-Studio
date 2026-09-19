@@ -294,13 +294,13 @@
 
           <!-- 舞台 B：字符串逐位比较（seg-2） -->
           <g id="stB" class="el">
-            <text x="500" y="52" text-anchor="middle" fill="#8d95a8" font-size="14">第一位不同就决定大小；都没不同则短的更小</text>
+            <text x="500" y="52" text-anchor="middle" fill="#8d95a8" font-size="14">🔎 第一位不同就决定大小；都没不同则短的更小</text>
             <g id="b-body"></g>
           </g>
 
           <!-- 舞台 C：比较函数契约（seg-4） -->
           <g id="stC" class="el">
-            <text x="500" y="48" text-anchor="middle" fill="#8d95a8" font-size="14">比较函数的返回值：只看符号，不看数值</text>
+            <text x="500" y="48" text-anchor="middle" fill="#8d95a8" font-size="14">⚖️ 比较函数的返回值：只看符号，不看数值</text>
             <g id="c-body"></g>
           </g>
 
@@ -760,7 +760,7 @@
   function renderF(which){
     only('stF');
     el('f-q').textContent = which === 'open' ? '[10, 9, 1].sort()  →  ?'
-                                             : '为什么是 [1, 10, 9] ？';
+                                             : '🤔 为什么是 [1, 10, 9] ？';
   }
 
   /** 舞台 G：巧合（5 句） */
@@ -831,27 +831,27 @@
   // 需要"学习者做一个可观测判断"的手感实验，一律做成画布门禁；只有挂不上任何转折点的
   // 纯手感对照才留侧栏，且**不挂 data-interaction**（不产证据）。
   var NOTES = [
-    { ico:'①', title:'默认是字符串序', open:true,
+    { ico:'🔤', title:'默认是字符串序', open:true,
       s:'不传比较函数时，元素先转成字符串，再按字符逐个比较。',
       x:'所以 [10,9,1] 会得到 [1,10,9]。',
       c:'想按数值排，必须自己传比较函数。' },
-    { ico:'②', title:'逐位比较', open:false,
+    { ico:'🔎', title:'逐位比较', open:false,
       s:'从左到右，第一个不同的字符定胜负；前缀相同则短的更小。',
       x:'"1" vs "10"：首位相等，短的没有第二位，算小。',
       c:'比较的是"字符"，不是"数值"——反直觉的根源。' },
-    { ico:'③', title:'位数相同才碰巧一致', open:false,
+    { ico:'🎲', title:'位数相同才碰巧一致', open:false,
       s:'[1,2,3] 看着对，只是因为位数恰好相同。',
       x:'一旦位数不同，字符串序和数值序就分道扬镳。',
       c:'别被这个巧合骗过。' },
-    { ico:'④', title:'比较函数只看符号', open:false,
+    { ico:'⚖️', title:'比较函数只看符号', open:false,
       s:'返回 负 / 零 / 正，分别代表 a 在 b 前 / 相等 / a 在 b 后。',
       x:'(a,b)=>a-b 就把数值排序交还给手写逻辑。',
-      c:'返回布尔值是常见错误（见 ⑤）。' },
-    { ico:'⑤', title:'返回数字，不是布尔值', open:false,
+      c:'返回布尔值是常见错误（见「返回数字，不是布尔值」）。' },
+    { ico:'🔢', title:'返回数字，不是布尔值', open:false,
       s:'(a,b)=>a<b 返回 true/false，会被当成 1 / 0。',
       x:'',
       c:'结果是乱序，而且不报错——最隐蔽的坑。' },
-    { ico:'⑥', title:'稳定排序', open:false,
+    { ico:'⚓', title:'稳定排序', open:false,
       s:'比较结果为 0（相等）的元素，保持原有的相对顺序。',
       x:'同分时谁先录入，谁就排在前面。',
       c:'JS 的 sort 自 ES2019 起保证稳定。' }

@@ -45,7 +45,11 @@ _CAP_PUNCT = set("，。！？、：；“”‘’「」『』·→—…（）
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # GBK/UTF-16 的 index.html 在这里裸抛 UnicodeDecodeError，报错不指向编码问题
+        raise SystemExit(f'[error] 页面不是合法 UTF-8，请另存为 UTF-8 后重试：{path}')
 
 
 def _cap_norm(text: str) -> str:
@@ -142,8 +146,9 @@ def _match_brace(stripped: str, open_idx: int) -> int:
 
 
 def _cap_extract_bodies(src: str) -> dict[str, str]:
-    """提取所有 renderer 形态的函数体：function NAME(...){...} 与 NAME = (...)=>{...} /
-    NAME = function(...){...}。返回 {名字: 体}，名字以 ^ 开头的是匿名赋值形态（仅用于计时检查）。"""
+    """提取所有 renderer 形态的函数体：function NAME(...){...} 与
+    NAME = (...)=>{...} / NAME = function(...){...}。返回 {名字: 体}，
+    两种形态都按函数名 / 变量名登记（RENDER 映射表本身除外，它不是 renderer）。"""
     stripped = _js_strip(src)
     bodies: dict[str, str] = {}
     for m in re.finditer(r"function\s+(\w+)\s*\([^)]*\)\s*\{", stripped):
@@ -313,12 +318,16 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
             errors.append(f'场景 {si + 1} 不是对象')
             continue
         sid = str(scene.get('step_id', '')).strip()
-        runtime = scene.get('runtime') or {}
+        runtime = scene.get('runtime')
         if not sid:
             errors.append(f'场景 {si + 1} 缺少 step_id')
         elif sid in seen_ids:
             errors.append(f'重复 step_id：{sid}')
         seen_ids.add(sid)
+        if not isinstance(runtime, dict):
+            # 坏输入要进错误列表，不能在这里 .get 裸抛 AttributeError 掀掉整轮检查
+            errors.append(f'{sid or si + 1}: runtime 必须是对象')
+            continue
 
         start, duration, end = runtime.get('start'), runtime.get('duration'), runtime.get('end')
         if not all(_finite_number(v) for v in (start, duration, end)):
@@ -365,7 +374,11 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
             stats["sentences"] += 1
             all_sentences.append((sid, ni, {**sentence, "start": s_start, "duration": s_dur, "end": s_end}))
 
-        if narration and abs((float(narration[-1].get('start', end)) + float(narration[-1].get('duration', 0))) - end) > 0.25:
+        # 末句可能正是上面 continue 掉的坏条目：这里再 float() 就是二次崩溃，先验后用。
+        last = narration[-1] if narration else None
+        if (isinstance(last, dict) and _finite_number(last.get('start'))
+                and _finite_number(last.get('duration'))
+                and abs((float(last['start']) + float(last['duration'])) - end) > 0.25):
             warnings.append(f'{sid}: 最后一句旁白结束点与 scene.end 相差较大')
 
     # 每个 scene 必须有 renderer；缺失时页面会出现“音频/字幕继续、画面静止”的真失败。
@@ -401,8 +414,8 @@ def static_check(src: str, *, allow_degraded: bool = False) -> dict[str, Any]:
             errors.append(f'{sid}: 同一 scene 配了 {count} 个 gate，但 runtime 只支持一个')
         if sid not in scene_set:
             errors.append(f'{sid}: GATES 引用了时间轴不存在的 scene')
-    if len(gate_counts) > 4:
-        warnings.append(f'页面配了 {len(gate_counts)} 道门禁；建议默认 1–2 道、长课最多 4 道')
+    if len(gate_counts) > 3:
+        warnings.append(f'页面配了 {len(gate_counts)} 道门禁；建议默认 1–2 道、长课最多 3 道（interactions.md §1）')
 
     # Renderer literals vs sentence text: warning only.
     for scene_id, _, sentence in all_sentences:
@@ -561,6 +574,8 @@ PROBE_DRIVER = r'''
       const list = card.el.querySelector('.sequence-list');
       const order = c.correct_order || c.answer || [];
       if (!list || !order.length) return false;
+      // 单项排序反转后仍是正序："错答"构造出来就是正答案，会假报"错答后仍锁定"
+      if (!correct && order.length < 2) return false;
       const ids = correct ? order.slice() : order.slice().reverse();
       const map = {};
       Array.from(list.children).forEach(li => { map[li.dataset.sequenceId] = li; });
@@ -803,10 +818,13 @@ def _find_chrome() -> str | None:
     return None
 
 
-def _build_probe(page: Path, out: Path, runtime_src: Path) -> None:
+def _build_probe(page: Path, out: Path) -> None:
     src = _read(page)
-    if 'id="lesson-timeline"' not in src:
-        raise SystemExit('[error] 找不到 #lesson-timeline')
+    # 与 static_check 用同一个解析入口：自造精确串匹配会造成"单引号 id 静态通过、
+    # 浏览器阶段报'找不到'"的口径分裂。
+    _, timeline_err = _timeline_from_html(src)
+    if timeline_err:
+        raise SystemExit(f'[error] {timeline_err}')
     # 门禁统计取"作者写下的页面"：inline 进来的 runtime 自带 GATES/scene 字样的
     # 注释与标识符，在它之上做字面量正则会污染计数（A6）。
     gate_scenes_json = json.dumps(sorted(_gate_scene_counts(src)), ensure_ascii=False)
@@ -857,9 +875,15 @@ def _run_chrome(cmd: list[str], stdout_path: Path, stderr_path: Path, timeout: f
                 if os.name == 'posix':
                     os.killpg(proc.pid, signal.SIGKILL)
                 else:
-                    proc.kill()
+                    # proc.kill() 只杀父进程，会留下 renderer/zygote 孤儿；
+                    # taskkill /T 沿进程树整棵收掉，失败再退回单杀父进程。
+                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                                   capture_output=True, timeout=10)
             except OSError:
-                pass
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -889,7 +913,7 @@ def _browser_preflight(chrome: str) -> bool:
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
-def browser_check(page: Path, runtime_src: Path, keep: bool = False,
+def browser_check(page: Path, keep: bool = False,
                   scene_count: int = 0) -> dict[str, Any] | None:
     chrome = _find_chrome()
     if not chrome:
@@ -906,11 +930,16 @@ def browser_check(page: Path, runtime_src: Path, keep: bool = False,
     log = temp_root / 'chrome.log'
     profile = temp_root / 'profile'
     try:
-        _build_probe(page, probe, runtime_src)
+        _build_probe(page, probe)
     except (OSError, UnicodeError) as exc:
         if not keep:
             shutil.rmtree(temp_root, ignore_errors=True)
         return {"ok": False, "errors": [f"无法构造浏览器检查页：{exc}"], "failures": [], "warnings": [], "stats": {}}
+    except SystemExit as exc:
+        # 构造页失败也要走报告通道：直接让 SystemExit 穿透会跳过 temp_root 清理
+        if not keep:
+            shutil.rmtree(temp_root, ignore_errors=True)
+        return {"ok": False, "errors": [str(exc)], "failures": [], "warnings": [], "stats": {}}
     profile.mkdir(parents=True, exist_ok=True)
     cmd = [
         chrome, '--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run',
@@ -986,8 +1015,7 @@ def main() -> int:
         print('[ok] 静态检查通过（已跳过浏览器字幕/门禁冒烟）')
         return 0
 
-    runtime_src = Path(__file__).with_name('interactive_runtime.js')
-    report = browser_check(page, runtime_src, keep=args.keep,
+    report = browser_check(page, keep=args.keep,
                            scene_count=static['stats'].get('scenes', 0))
     if report is None:
         print('[note] 浏览器冒烟未执行：未找到可用 Chrome/Edge，或 headless 预检未通过。静态检查已通过。')

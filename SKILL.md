@@ -3,7 +3,7 @@ name: courseware-studio
 description: >
   把讲稿或已有旁白做成一页会讲话的课件：单页 HTML、音频、逐句时间轴、画布内字幕、可选认知门禁。
   适合把一段已经想清楚的内容讲透；不负责掌握度、学习进度或复习系统。
-version: 1.6.2
+version: 1.6.3
 agent_created: true
 ---
 
@@ -82,6 +82,7 @@ data-locked="1"
 | 3 | timing + source | `<script id="lesson-timeline">…</script>` |
 | 4 | 时间轴 + 页面范本 | `index.html` + `audio/` + `interactive_runtime.js` |
 | 5 | 成品页面 | `check_gates.py` 检查报告 |
+| 6（可选） | 成品页面 + 旁白音频 | `<课件目录名>.mp4` 线性视频（`export_video.py`） |
 
 `references/template.html` 是结构范本；`references/` 不放 runtime 副本。
 
@@ -131,7 +132,13 @@ renderer 只回答：**当前句序号下，画布长什么样。**
 - 自己维护字幕；
 - 再造另一套时间判断。
 
-详见 `references/stage.md`。
+### emoji 是默认装饰层
+
+画面图元与侧栏**默认配一个贴切的 emoji 锚点**（📤 推送事件、🧩 复用、🖥️ 执行机、⏳ 等待、🚀 发布……），每个概念记号至多一个。这是默认动作，不等用户开口要。
+
+三条禁区：旁白 `text` / 字幕（禁，TTS 会念、破坏字幕唯一来源）；门禁题面与反馈（禁，保持纯文字）；emoji 不驱动状态、不进 renderer 时间步。
+
+其余渲染纪律详见 `references/stage.md`。
 
 ## 6. 门禁设计
 
@@ -202,7 +209,7 @@ el.dataset.locked = '1';
 3. **门禁 / JS**：真实浏览器里自动走错答 → 正确答，检查句子边界、`data-locked`、继续按钮；门禁检测是**活动驱动**的（页面真把门禁弹出来就会被测，不依赖 `var GATES = [...]` 字面量），配了却从未弹出的门禁会被报出；
 4. **JS 错误**：探针脚本注入到 `<head>` 最前，页面**加载期**抛出的错误（早于任何业务脚本，包括 runtime 契约错误）也会被抓进报告。
 
-它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（`RENDER` 引用的具名函数与内联匿名体里不得用 `setTimeout`/`setInterval` 排程，解析已剥离字符串/注释防误报）、音频路径和 gate 对应场景（超过 4 道门禁给警告）；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。浏览器冒烟的虚拟时间预算按场景数扩容。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。检查依赖的页面 DOM 契约（`#main-audio`、`#lesson-timeline`、`#cap-text[data-courseware-caption]`、`#gate` 等）见 `references/runtime.md` §7。
+它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（`RENDER` 引用的具名函数与内联匿名体里不得用 `setTimeout`/`setInterval` 排程，解析已剥离字符串/注释防误报）、音频路径和 gate 对应场景（超过 3 道门禁给警告）；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。浏览器冒烟的虚拟时间预算按场景数扩容。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。检查依赖的页面 DOM 契约（`#main-audio`、`#lesson-timeline`、`#cap-text[data-courseware-caption]`、`#gate` 等）见 `references/runtime.md` §7。
 
 ```bash
 python scripts/check_gates.py <页面目录或 index.html>
@@ -210,6 +217,19 @@ python scripts/check_gates.py <页面目录或 index.html> --require-browser  # 
 ```
 
 没有 Chrome / Edge 时仍完成静态检查，并明确提示浏览器冒烟检查未执行。
+
+### `export_video.py`（可选：导出线性视频）
+
+画面完全由 `audio.currentTime` 驱动、一句旁白 = 一个稳定视觉步，所以线性视频不需要录屏：逐句在句末前一瞬用 headless Chrome 定格截帧，按逐句时长拼接，再混入 `combined.wav`。依赖本机 Chrome/Edge 与 `ffmpeg`/`ffprobe`，不新增其它基础设施。
+
+```bash
+python scripts/export_video.py <页面目录或 index.html>        # 默认输出 <目录名>.mp4
+python scripts/export_video.py <页面目录> -o out.mp4 --keep   # 保留逐帧 PNG 供排查
+```
+
+- 前提：页面遵循标准骨架（`.stage` 舞台、时间轴已内联、`#main-audio` 指向交付音频）；截图窗口按舞台 `viewBox` 比例推算。
+- 门禁是交互证据通道，线性导出自然跳过：每帧取在句末之前，不踩 `at:'end'` 锚点。
+- 截图页副本 `_shot.html` 与帧目录都在临时目录里，跑完自动清理（`--keep` 除外）；不要为单个课件另写导出脚本。
 
 ## 9. 信源不可信
 
@@ -236,10 +256,12 @@ python scripts/check_gates.py <页面目录或 index.html> --require-browser  # 
 - [ ] 场景空档保留上一句字幕（不清空、不闪白）；
 - [ ] renderer 不用 `setTimeout` / `setInterval` 自带计时（一次性 rAF 补间除外）；
 - [ ] 场景步数与旁白句数对得上；
+- [ ] 画面图元 / 侧栏默认配了贴切的 emoji 锚点（旁白、字幕、门禁题面一律不放）；
 - [ ] 门禁只在场景开头或 `at:'end'` 开；
 - [ ] 对答才产生 `data-locked="1"`；
 - [ ] 动态交互建成后调用 `window.coursewareStudioWire()`，且调用点在揭开门禁浮层**之前**（契约抛错不能留下半开的门禁）；
 - [ ] QA 契约的 DOM 钩子（`#gate` / `#gate-host` / `#gate-go` / `#pregate` 等）与 `references/runtime.md` §7 一致；
 - [ ] 页面没有为本课件单独新增校验脚本；
 - [ ] 运行 `check_gates.py`；
+- [ ] 需要视频交付时用 `scripts/export_video.py`，不为单个课件另写导出/录屏脚本；
 - [ ] 成品目录没有巡检副本、截图、日志等残留。

@@ -21,6 +21,33 @@
 
 `text` 是真正被朗读的正文，同时也是最终字幕的唯一文本来源。
 
+多人对话（问答 / 情景剧）用顶层 `speakers` + 段落 `dialogue` 代替该段的 `text`：
+
+```json
+{
+  "speakers": {
+    "A": {"label": "小明", "voice_id": "…", "voice_style": "…"},
+    "B": {"label": "小钢", "voice_id": "…"}
+  },
+  "segments": [
+    {
+      "id": "seg-2",
+      "title": "一轮问答",
+      "dialogue": [
+        {"speaker": "A", "text": "第一问。第二句。"},
+        {"speaker": "B", "text": "这是回答。"}
+      ],
+      "hl": [3]
+    }
+  ]
+}
+```
+
+每一轮**独立分句**（短句不会被并进下一位说话人）；turn 级音色取 `speakers[speaker]`，
+比段级 `voice_id` / `voice_style` 更细。落成的时间轴句子条目带 `speaker`（即 `label`），
+`build_timeline.py` 透传为 `runtime.narration[i].speaker`，页面可用它标"谁在说"；
+`hl` 仍按**整段总句序**从 1 数起，跨轮连续计数。
+
 ## 2. 分句原则
 
 一条作者句子 = 一个视觉步 = 一个字幕步。
@@ -95,8 +122,9 @@ python scripts/build_timeline.py \
 ~/.config/courseware-studio/.env
 ```
 
-项目级 `.env` 从讲稿/输出所在目录向上找，**越过带 `.git` 的项目根就停**——不会把
-磁盘上层或别人目录里的 `.env` 吸进来。`.env` 值支持成对引号与行内注释：
+项目级 `.env` 从讲稿/输出所在目录向上找，**走到当前工作目录即停**：命中带 `.git` 的
+项目根也停（该根的 `.env` 是最后一个候选）；不会越过 cwd 去吸它的父目录、更不吸盘根
+或别人目录里的 `.env`。`.env` 值支持成对引号与行内注释：
 `KEY=sk-xxx # 备注` 取 `sk-xxx`，`KEY="sk-a#b"` 里的 `#` 是值的一部分；
 不带引号时，只有"空白 + `#`"才起注释作用。
 

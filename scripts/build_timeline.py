@@ -14,7 +14,7 @@
 形状：
     scenes[i] = {"step_id", "content":{"title","tagline"},
                  "runtime":{"start","duration","end",
-                            "narration":[{start,duration,text,hl?,synth_failed?}]}}
+                            "narration":[{start,duration,text,hl?,speaker?,synth_failed?}]}}
 
 `narration[i].text` 是逐句口播原文，同时也是**画布字幕的唯一来源**——页面不留第二份文案，
 所以字幕与旁白在结构上不可能对不上。`--source` 给的 `hl`（结论句序号，从 1 数起）只加一个
@@ -71,7 +71,12 @@ def _hl_indices(raw, sid, n):
     它只影响那一句字幕的强调色，与文案、时长、画面步数都无关。
     """
     out = set()
-    for v in raw or []:
+    if raw is None:
+        return out
+    if not isinstance(raw, list):
+        print(f"[warn] {sid} 的 hl 必须是数组（收到 {raw!r}），已忽略", file=sys.stderr)
+        return out
+    for v in raw:
         try:
             i = int(v)
         except (TypeError, ValueError):
@@ -142,6 +147,8 @@ def build(timing, content):
                 raise SystemExit(f"[error] {sid}#{ni}: 与上一句旁白重叠 {last_sent_end - s_start:.3f}s")
             last_sent_end = s_end
             item = {"start": round(s_start, 3), "duration": round(s_dur, 3), "text": text}
+            if sent.get("speaker"):
+                item["speaker"] = str(sent["speaker"])
             if sent.get("synth_failed"):
                 item["synth_failed"] = True
             if ni in hl:
