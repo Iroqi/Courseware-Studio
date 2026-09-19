@@ -537,6 +537,13 @@ def _finalize_audio(args, ffmpeg_path, sentence_data, source_data, seg_config,
         if i < len(sentence_data) - 1:
             cumulative += args.gap
 
+    # 时间轴按各句实测时长累加，而 combined.wav 是 concat -c copy 流拷贝出来的。
+    # 两者对不上说明句间采样格式不一致、流拷贝悄悄改了时长——逐句时间会整体漂移。
+    if abs(total_dur - cumulative) > max(0.5, 0.02 * cumulative):
+        print(f"[warn] combined.wav 实测 {total_dur:.2f}s 与时间轴累计 {cumulative:.2f}s "
+              f"相差较大——通常是各句音频采样率/声道数不一致，concat -c copy 流拷贝下"
+              f"会造成逐句时间轴漂移，请确认 TTS 输出格式一致", file=sys.stderr)
+
     if args.bgm and os.path.exists(args.bgm):
         # bgm_volume 直接拼进 ffmpeg 滤镜串：clamp 越界值，防注入与削波（NaN/Inf
         # 已在 argparse 阶段拦下，早于 TTS，不烧额度）。
@@ -780,6 +787,8 @@ def main():
     # 产物路径守卫：--dry-run 承诺不写文件，不需要拦
     if not args.dry_run:
         guard_not_in_skill_dir(("-o/--output", os.path.abspath(args.output)))
+        if args.cache_dir:
+            guard_not_in_skill_dir(("--cache-dir", os.path.abspath(args.cache_dir)))
 
     api_key = get_key("MIMO_API_KEY", args.api_key, source_path=args.source)
     if not api_key and not args.dry_run:

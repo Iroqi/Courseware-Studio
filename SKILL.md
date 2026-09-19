@@ -202,7 +202,7 @@ el.dataset.locked = '1';
 3. **门禁 / JS**：真实浏览器里自动走错答 → 正确答，检查句子边界、`data-locked`、继续按钮；门禁检测是**活动驱动**的（页面真把门禁弹出来就会被测，不依赖 `var GATES = [...]` 字面量），配了却从未弹出的门禁会被报出；
 4. **JS 错误**：探针脚本注入到 `<head>` 最前，页面**加载期**抛出的错误（早于任何业务脚本，包括 runtime 契约错误）也会被抓进报告。
 
-它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（`RENDER` 引用的具名函数与内联匿名体里不得用 `setTimeout`/`setInterval` 排程，解析已剥离字符串/注释防误报）、音频路径和 gate 对应场景（超过 4 道门禁给警告）；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。浏览器冒烟的虚拟时间预算按场景数扩容。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。检查依赖的页面 DOM 契约（`#main-audio`、`#lesson-timeline`、`#cap-text[data-courseware-caption]`、`#gate` 等）见 `references/runtime.md` §7。
+它是通用 QA，不是给某份课件单独维护的 SelfTest。**静态模式**只验证时间轴、字幕挂点、renderer（`RENDER` 引用的具名函数与内联匿名体里不得用 `setTimeout`/`setInterval` 排程，解析已剥离字符串/注释防误报）、音频路径和 gate 对应场景（超过 3 道门禁给警告）；动态题目的配置契约与手势绑定只能由**浏览器模式**验证。浏览器冒烟的虚拟时间预算按场景数扩容。默认先做静态检查；有可用浏览器才做冒烟，CI 可用 `--require-browser` 强制要求浏览器检查。默认不接受 `synth_failed` 降级句；确实需要保留降级成片时才显式使用 `--allow-degraded`。检查依赖的页面 DOM 契约（`#main-audio`、`#lesson-timeline`、`#cap-text[data-courseware-caption]`、`#gate` 等）见 `references/runtime.md` §7。
 
 ```bash
 python scripts/check_gates.py <页面目录或 index.html>
